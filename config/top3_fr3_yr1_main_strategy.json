@@ -1,0 +1,52 @@
+{
+  "id": "top3_main_with_fr3_yr1",
+  "status": "shadow_candidate_enabled_by_context",
+  "base_strategy": {
+    "A": "10% <= gain_24h < 20%, Rank2/Rank3, 3x",
+    "B": "20% <= gain_24h < 40%, Rank2 1.5 <= volume_24h_ratio_7d < 5, Rank3 1.2 <= volume_24h_ratio_7d < 5, base Rank2 3x / Rank3 5x",
+    "C": "40% <= gain_24h < 60%, Rank2 only, 3 <= volume_24h_ratio_7d < 5.5, 2x"
+  },
+  "regime_controller": {
+    "model": "FR_avg_return24_l3_gt_0_fr3_yr1",
+    "risk_off_sensor": {
+      "name": "D_b_r3_decay_l15",
+      "opportunity_set": "Bucket B Rank3 eligible",
+      "metric": "mean(last15(decay48))",
+      "decay48": "return_48h - return_24h",
+      "green": "D15 > walk-forward Q10",
+      "yellow": "walk-forward Q5 < D15 <= walk-forward Q10",
+      "red": "D15 <= walk-forward Q5"
+    },
+    "fast_recovery_sensor": {
+      "name": "avg_return24_l3_gt_0",
+      "metric": "mean(last3(return_24h))",
+      "trigger": "AvgReturn24_L3 > 0",
+      "as_of": "Only opportunities with opportunity_time + 24h <= signal_time may be used"
+    },
+    "bucket_b_leverage": {
+      "GREEN": {
+        "Rank2": 3,
+        "Rank3": 5
+      },
+      "YELLOW": {
+        "Rank2": 3,
+        "Rank3": "3x, or 5x when recovery_signal is true"
+      },
+      "RED": {
+        "Rank2": "2x, or 3x when recovery_signal is true",
+        "Rank3": "1x without recovery; 3x on first recovery signal; 5x after two consecutive recovery signals"
+      }
+    }
+  },
+  "runtime_context_json": {
+    "env": "TOP3_REGIME_CONTEXT_PATH",
+    "example": {
+      "signal_time_ms": 1783296000000,
+      "state": "RED",
+      "recovery_signal": true,
+      "recovery_streak": 1,
+      "model": "FR_avg_return24_l3_gt_0_fr3_yr1"
+    },
+    "fallback": "If the env var is empty, file is missing, or signal_time_ms does not match the current signal window, runtime falls back to base GREEN/main-strategy leverage."
+  }
+}

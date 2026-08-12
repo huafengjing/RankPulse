@@ -1,0 +1,23 @@
+data:
+  base_url: "https://fapi.binance.com"
+  interval: "5m"
+  lookback_days: 60
+  cache_format: "parquet"
+  exclude_symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+  apply_volume_filter_on_download: false
+  min_quote_volume: 20000000
+  request_sleep_seconds: 0.2
+  max_retries: 5
+
+strategy:
+  cooldown_days: 3
+  observation_hours: 72
+  tp1_pct: 0.10
+  sl_pct: -0.05
+  max_holding_hours: 24
+  max_concurrent_positions: 5
+  taker_fee_rate: 0.0005
+  slippage_rate: 0.0005
+
+outputs:
+  dir: "outputs"

@@ -9,7 +9,7 @@ This summary reflects the current main strategy research output using local cach
 - Signal source: reconstructed Top3 by 24H gain.
 - Active ranks: Rank2 and Rank3.
 - Signal times: Beijing 00:00 and 08:00.
-- Holding period: 6D unless 12H weak-exit condition triggers.
+- Holding period: 6D unless 4H extreme weak stop or 12H weak-exit condition triggers.
 - Excluded: Rank1, `RAVEUSDT`, `gain_24h >= 80%`, and all 60%-80% gain signals.
 - Fees: 0.1% buy and 0.1% sell.
 - Slippage: 0 in backtest.

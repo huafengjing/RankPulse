@@ -1,0 +1,61 @@
+{
+  "status": "research_main_strategy_locked",
+  "effective_date": "2026-07-29",
+  "market": "Binance Futures USD-M USDT Perpetual",
+  "direction": "short",
+  "margin_per_trade_usdt": 100.0,
+  "margin_mode": "isolated",
+  "global_same_symbol_position_lock": true,
+  "existing_position_action": "skip_new_signal",
+  "add_to_position": false,
+  "reset_exit_time": false,
+  "fee_rate_each_side": 0.001,
+  "slippage": 0.0,
+  "funding_included": false,
+  "main_candidates": {
+    "A": {
+      "rank": 1,
+      "drop_bucket_pct": [0.0, 20.0],
+      "snapshot_times_beijing": ["00:00", "04:00"],
+      "holding_days": 1,
+      "leverage": 5
+    },
+    "B": {
+      "rank": 1,
+      "drop_bucket_pct": [20.0, 40.0],
+      "snapshot_times_beijing": ["08:00"],
+      "holding_days": 2,
+      "leverage": 3
+    },
+    "C": {
+      "rank": 3,
+      "drop_bucket_pct": [20.0, 40.0],
+      "snapshot_times_beijing": ["00:00", "20:00"],
+      "holding_days": 3,
+      "leverage": 3
+    }
+  },
+  "reentry_risk_controls": {
+    "profit_exit_reentry_within_1d": {
+      "enabled": false,
+      "status": "rejected_in_ablation",
+      "reason": "improvement depended on the 2026-07 partial month; complete-month delta was negative"
+    },
+    "post_liquidation_reentry_5d_30d": {
+      "enabled": true,
+      "status": "locked_research_main_rule",
+      "interval_definition": "5 days < next entry - actual liquidation time <= 30 days",
+      "blocked_signal_resets_window": false,
+      "source_report": "outputs/reentry_block_rules_20260729_012804/Reentry_Block_Rules_Report.md"
+    }
+  },
+  "experimental_candidates": {
+    "B_5X": {
+      "base_candidate": "B",
+      "holding_days": 2,
+      "leverage": 5,
+      "status": "future_experiment_only"
+    }
+  },
+  "live_trading_enabled": false
+}

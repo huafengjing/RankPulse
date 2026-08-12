@@ -1,0 +1,82 @@
+{
+  "id": "regime_adaptive_backup_5d_count_h0_balanced_y2_r3",
+  "status": "backup_candidate",
+  "selected_at_utc": "2026-08-10",
+  "research_mode_only": true,
+  "baseline_scope": {
+    "source_output_dir": "output/regime_adaptive_leverage_original_velvet",
+    "ranking_universe_excluded_symbols": ["BTWUSDT"],
+    "note": "Original/VELVET-aligned universe. Main strategy signal rules are unchanged; BTWUSDT is excluded only to preserve the original ranking basis where VELVETUSDT remains in the 2026-06-06 Rank3 signal."
+  },
+  "controller": {
+    "candidate": "5d_count_h0__balanced_y2_r3",
+    "regime_model": {
+      "indicator": "Rank4-10 Post24Decay",
+      "definition": "mean(future_return_48h - future_return_24h)",
+      "window_mode": "fixed_count",
+      "mature_observations": 70,
+      "approx_calendar_days": 5,
+      "hysteresis": 0,
+      "warmup": {
+        "minimum_days": 30,
+        "minimum_mature_observations": 70,
+        "default_before_warmup": "GREEN"
+      },
+      "thresholds": {
+        "yellow": "walk_forward_historical_q10",
+        "red": "walk_forward_historical_q5"
+      },
+      "lookahead_policy": "Only observations whose 48H future window is complete before trade time are eligible."
+    },
+    "response_matrix": {
+      "GREEN": {
+        "Bucket A": "base",
+        "Bucket B": "base",
+        "Bucket C": "base"
+      },
+      "YELLOW": {
+        "Bucket A": "cap_2x",
+        "Bucket B": "cap_2x",
+        "Bucket C": "base"
+      },
+      "RED": {
+        "Bucket A": "cap_1x",
+        "Bucket B": "off",
+        "Bucket C": "base"
+      }
+    }
+  },
+  "frozen_main_strategy": {
+    "observation_hours_bj": ["00:00", "08:00"],
+    "excluded_symbols": ["RAVEUSDT"],
+    "same_symbol_lock": true,
+    "holding_days": 6,
+    "fee_rate_per_side": 0.001,
+    "early_exits": [
+      "4H extreme weak: MFE4H < 2% and MAE4H < -8%",
+      "12H weak: MFE12H < 5% and close_return_12H < 0"
+    ],
+    "buckets": {
+      "A": "10% <= gain_24h < 20%, Rank2/Rank3, no volume filter, 3x",
+      "B": "20% <= gain_24h < 40%, Rank2/Rank3, 1.5 <= volume_24h_ratio_7d < 5, Rank2 3x, Rank3 5x",
+      "C": "40% <= gain_24h < 60%, Rank2 only, 3 <= volume_24h_ratio_7d < 5.5, 2x"
+    }
+  },
+  "headline_metrics": {
+    "evaluated_positions": 297,
+    "closed_trades": 291,
+    "open_mark_to_market": 6,
+    "net_pnl_u": 11460.16,
+    "profit_factor": 2.13,
+    "win_rate_pct": 30.98,
+    "median_return_pct": -22.46,
+    "max_drawdown_u": -2308.92,
+    "liquidations": 49,
+    "regime_off_skips": 14,
+    "avg_leverage": 3.53,
+    "july_profit_u": -1388.66,
+    "july_loss_saved_vs_baseline_u": 230.35,
+    "jan_jun_profit_sacrifice_u": -262.72
+  },
+  "decision_note": "Keep as backup candidate while testing other parameters. Do not promote to main strategy unless future out-of-sample or parameter comparisons fail to find a better risk-adjusted candidate."
+}

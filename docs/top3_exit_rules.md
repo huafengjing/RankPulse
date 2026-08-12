@@ -1,6 +1,6 @@
 # Top3 Exit Rules
 
-Last updated: 2026-06-17
+Last updated: 2026-06-29
 
 ## Default Exit
 
@@ -10,12 +10,11 @@ Last updated: 2026-06-17
 
 ## 12H Weak Exit
 
-Exit early at 12H if all three conditions are true:
+Exit early at 12H if both conditions are true:
 
 ```text
 12H MFE < 5%
 12H close_return < 0%
-12H MAE < -5%
 ```
 
 Execution in backtest:
@@ -23,11 +22,29 @@ Execution in backtest:
 - Exit time: `entry_time + 12H`.
 - Exit price: corresponding 1H open.
 
+This rule is enabled in the current main strategy. Implementations may expose `ENABLE_12H_WEAK_EXIT`, but its default value must be `true`.
+
+## 4H Extreme Weak Stop
+
+Exit early at 4H if both conditions are true:
+
+```text
+4H MFE < 2%
+4H MAE < -8%
+```
+
+Execution in backtest:
+
+- Exit time: `entry_time + 4H`.
+- Exit price: corresponding 1H open.
+
+This rule is enabled in the current main strategy. Implementations may expose `ENABLE_4H_EXTREME_WEAK_EXIT`, but its default value must be `true`.
+
 ## Take Profit
 
 There is no active take-profit rule in the current main strategy.
 
-Previously researched TP and runner rules are not part of the current main strategy.
+Previously researched TP15, TP50, runner, and trailing-stop rules are not part of the current main strategy.
 
 ## Stop Loss
 
