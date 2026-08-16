@@ -13,6 +13,7 @@ from src.config.schedule import (
     market_preflight_window_time_ms,
     signal_window_time_ms,
 )
+from src.execution.bootstrap import BootstrapManager, BootstrapSignalProvider
 from src.exchange.binance_filters import SymbolFilters, filters_from_exchange_symbol
 from src.execution.testnet_engine import (
     PositionPrecheckFailedError,
@@ -24,7 +25,7 @@ from src.market.binance_futures import Kline, Ticker24hrStat
 from src.market.ticker_leaderboard import build_top3_from_24hr_tickers
 from src.paper.signals import generate_binance_ticker_rank_signals
 from src.paper.store import PaperEventLogger
-from src.research.top3_strategy_rules import (
+from src.research.rankpulse_strategy_rules import (
     Top3Signal,
     Top3RegimeContext,
     leverage_for_signal,
@@ -85,6 +86,7 @@ class TestnetTradingRunner:
         settings: AppSettings,
         signal_notifier: SignalNotifier | None = None,
         regime_context_provider: RegimeContextProvider | None = None,
+        bootstrap_signal_provider: BootstrapSignalProvider | None = None,
         event_prefix: str = "testnet",
     ) -> None:
         self.market_client = market_client
@@ -102,6 +104,14 @@ class TestnetTradingRunner:
         self.signal_notifier = signal_notifier
         self.regime_context_provider = regime_context_provider
         self.logger = logger
+        self.bootstrap_manager = BootstrapManager(
+            state_store=state_store,
+            logger=logger,
+            settings=settings,
+            market_client=market_client,
+            signal_provider=bootstrap_signal_provider,
+            event_prefix=event_prefix,
+        )
 
     def run_signal_cycle(self, signal_time_ms: int) -> list[TestnetPosition]:
         signal_window_ms = signal_window_time_ms(signal_time_ms, self.settings)
@@ -156,7 +166,7 @@ class TestnetTradingRunner:
                 rank=signal.rank,
                 gain_24h=signal.gain_24h,
                 volume_24h_ratio_7d=signal.volume_24h_ratio_7d,
-                snapshot_hour_bj="00:00",
+                snapshot_hour_bj=self._strategy_snapshot_hour(signal.snapshot_hour_bj),
             )
             reason = signal_rejection_reason(strategy_signal)
             if reason is not None:
@@ -194,6 +204,9 @@ class TestnetTradingRunner:
             TestnetState(
                 open_positions=latest_state.open_positions,
                 closed_positions=latest_state.closed_positions,
+                bootstrap_metadata=latest_state.bootstrap_metadata,
+                bootstrap_virtual_positions=latest_state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=latest_state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=signal_window_ms,
                 last_exit_check_time_ms=latest_state.last_exit_check_time_ms,
                 last_information_time_ms=latest_state.last_information_time_ms,
@@ -224,6 +237,9 @@ class TestnetTradingRunner:
             TestnetState(
                 open_positions=latest_state.open_positions,
                 closed_positions=latest_state.closed_positions,
+                bootstrap_metadata=latest_state.bootstrap_metadata,
+                bootstrap_virtual_positions=latest_state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=latest_state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=latest_state.last_signal_time_ms,
                 last_exit_check_time_ms=latest_state.last_exit_check_time_ms,
                 last_information_time_ms=information_window_ms,
@@ -296,6 +312,9 @@ class TestnetTradingRunner:
             TestnetState(
                 open_positions=latest_state.open_positions,
                 closed_positions=latest_state.closed_positions,
+                bootstrap_metadata=latest_state.bootstrap_metadata,
+                bootstrap_virtual_positions=latest_state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=latest_state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=latest_state.last_signal_time_ms,
                 last_exit_check_time_ms=latest_state.last_exit_check_time_ms,
                 last_information_time_ms=latest_state.last_information_time_ms,
@@ -303,6 +322,55 @@ class TestnetTradingRunner:
             )
         )
         return True
+
+    def sync_open_positions_from_exchange(self) -> list[str]:
+        exchange_positions = self.engine.client.open_positions()
+        exchange_symbols = {
+            symbol
+            for symbol, position in exchange_positions.items()
+            if position.position_amt != 0
+        }
+        state = self.state_store.load()
+        stale_positions = [
+            position
+            for position in state.open_positions
+            if position.symbol not in exchange_symbols
+        ]
+        if stale_positions:
+            stale_symbols = {position.symbol for position in stale_positions}
+            self.state_store.save(
+                TestnetState(
+                    open_positions=[
+                        position
+                        for position in state.open_positions
+                        if position.symbol not in stale_symbols
+                    ],
+                    closed_positions=state.closed_positions,
+                    bootstrap_metadata=state.bootstrap_metadata,
+                    bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                    closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
+                    last_signal_time_ms=state.last_signal_time_ms,
+                    last_exit_check_time_ms=state.last_exit_check_time_ms,
+                    last_information_time_ms=state.last_information_time_ms,
+                    last_preflight_time_ms=state.last_preflight_time_ms,
+                )
+            )
+            for position in stale_positions:
+                self.logger.log(
+                    f"{self.event_prefix}_position_reconciled",
+                    {
+                        "symbol": position.symbol,
+                        "reason": "exchange_position_missing_after_cycle",
+                        "local_qty": position.qty,
+                        "trading_mode": self.settings.trading_mode.value,
+                        "signal_mode": self.settings.signal_mode.value,
+                    },
+                )
+        return sorted(exchange_symbols)
+
+    def ensure_bootstrap(self, now_ms: int):
+        exchange_positions = self.engine.client.open_positions()
+        return self.bootstrap_manager.ensure_bootstrap(now_ms, exchange_positions)
 
     def _publish_signal_snapshot(
         self,
@@ -345,7 +413,7 @@ class TestnetTradingRunner:
             ticker_stats_by_symbol=ticker_stats,
             volume_ratio_by_symbol=volume_ratio_by_symbol,
         )
-        candidate_entries = [entry for entry in ranked_entries if entry.rank in {2, 3}]
+        candidate_entries = [entry for entry in ranked_entries if entry.rank in {1, 2, 3}]
         table_rows: list[list[str]] = []
         telegram_rows: list[list[str]] = []
         telegram_notes: list[str] = []
@@ -423,6 +491,11 @@ class TestnetTradingRunner:
             return None
         return self.regime_context_provider.context_at(signal_time_ms)
 
+    def _strategy_snapshot_hour(self, snapshot_hour_bj: str) -> str:
+        if self.settings.signal_mode == SignalMode.TEST_FAST:
+            return "00:00"
+        return snapshot_hour_bj
+
     def run_hourly_exit_cycle(self, now_ms: int):
         exit_window_ms = hourly_window_time_ms(now_ms)
         if exit_window_ms is None:
@@ -439,6 +512,9 @@ class TestnetTradingRunner:
             TestnetState(
                 open_positions=latest_state.open_positions,
                 closed_positions=latest_state.closed_positions,
+                bootstrap_metadata=latest_state.bootstrap_metadata,
+                bootstrap_virtual_positions=latest_state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=latest_state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=latest_state.last_signal_time_ms,
                 last_exit_check_time_ms=exit_window_ms,
                 last_information_time_ms=latest_state.last_information_time_ms,
@@ -454,12 +530,16 @@ class TestnetTradingRunner:
                 closed_position = self.engine.close_position(position.symbol, now_ms, "planned")
                 if closed_position is not None:
                     closed.append(closed_position)
+        for position in self.bootstrap_manager.close_due_virtual_positions(now_ms, include_planned=True):
+            closed.append(position)
         return closed
     def run_weak_exit_checks(self, now_ms: int):
         if not self.settings.enable_12h_weak_exit and not self.settings.enable_4h_extreme_weak_exit:
             return []
 
         closed = []
+        for position in self.bootstrap_manager.close_due_virtual_positions(now_ms, include_planned=False):
+            closed.append(position)
         for position in list(self.state_store.load().open_positions):
             if (
                 self.settings.enable_4h_extreme_weak_exit

@@ -187,7 +187,7 @@ class BinanceFuturesMarketClient:
         url = f"{self.base_url}{path}"
         if query:
             url = f"{url}?{query}"
-        request = Request(url, headers={"User-Agent": "Top3MomentumTrader/0.1"})
+        request = Request(url, headers={"User-Agent": "RankPulse/0.1"})
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:

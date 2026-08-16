@@ -71,6 +71,37 @@ def test_generate_binance_ticker_rank_signals_uses_rank2_and_rank3_with_latest_f
     assert signals[0].volume_24h_ratio_7d == 12.0 / (48.0 / 7.0)
 
 
+def test_generate_binance_ticker_rank_signals_includes_tuned_rank1_candidate() -> None:
+    signal_time_ms = bj_time_ms(0)
+    start = signal_time_ms - 42 * FOUR_HOUR_MS
+    klines = [make_4h_kline(start + index * FOUR_HOUR_MS, volume) for index, volume in enumerate([1.0] * 36 + [4.0] * 6)]
+
+    signals = generate_binance_ticker_rank_signals(
+        signal_time_ms=signal_time_ms,
+        ticker_stats_by_symbol={
+            "RANK1USDT": Ticker24hrStat(symbol="RANK1USDT", price_change_percent=30.0),
+            "RANK2USDT": Ticker24hrStat(symbol="RANK2USDT", price_change_percent=25.0),
+            "RANK3USDT": Ticker24hrStat(symbol="RANK3USDT", price_change_percent=20.0),
+        },
+        four_hour_klines_by_symbol={
+            "RANK1USDT": klines,
+            "RANK2USDT": klines,
+            "RANK3USDT": klines,
+        },
+        latest_prices_by_symbol={
+            "RANK1USDT": 11.0,
+            "RANK2USDT": 22.0,
+            "RANK3USDT": 33.0,
+        },
+    )
+
+    assert [(signal.rank, signal.symbol, signal.fill_price) for signal in signals] == [
+        (1, "RANK1USDT", 11.0),
+        (2, "RANK2USDT", 22.0),
+        (3, "RANK3USDT", 33.0),
+    ]
+
+
 def test_generate_binance_ticker_rank_signals_returns_empty_outside_signal_hours() -> None:
     signals = generate_binance_ticker_rank_signals(
         signal_time_ms=bj_time_ms(9),

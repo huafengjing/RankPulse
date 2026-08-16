@@ -1,104 +1,104 @@
-# Regime Adaptive Backup Candidate
+# Regime Adaptive 备选研究方案
 
-Last updated: 2026-08-10
+最后更新：2026-08-15
 
-Status: backup candidate, research only. This does not replace the current main strategy.
+状态：备选研究方案，不是当前主策略。
 
-## Selected Candidate
+## 1. 备选方案
 
-`5d_count_h0__balanced_y2_r3`
+```text
+5d_count_h0__balanced_y2_r3
+```
 
-This candidate is saved as the current backup Regime Risk Controller. If later parameter tests do not produce a better risk-adjusted result, this is the fallback candidate to compare against.
+该方案曾作为 Regime Risk Controller 的备选候选保存。当前主策略已经选择并工程化 FR3/YR1，本文件仅用于保留历史研究记录。
 
-## Baseline Scope
+## 2. 研究范围
 
-- Output source: `output/regime_adaptive_leverage_original_velvet`
-- Ranking universe basis: original/VELVET-aligned universe
-- Ranking universe exclusion for this run: `BTWUSDT`
-- Main strategy rules: unchanged
-- `VELVETUSDT`: retained
-- `RAVEUSDT`: still filtered
+- 输出目录：`output/regime_adaptive_leverage_original_velvet`
+- 排名 universe：original / VELVET 对齐口径
+- 本轮排除：`BTWUSDT`
+- `VELVETUSDT`：保留
+- `RAVEUSDT`：过滤
+- 主策略入场规则：不变
 
-The `BTWUSDT` exclusion is only for preserving the original ranking basis where `VELVETUSDT` is Rank3 on `2026-06-06 00:00 UTC`. This file records the chosen backup candidate under that agreed research scope.
+`BTWUSDT` 排除只用于复现当时研究口径，使 `VELVETUSDT` 在 `2026-06-06 00:00 UTC` 处于 Rank3。
 
-## Regime Indicator
+## 3. Regime 指标
 
-`5d_count_h0` uses Rank4-10 Post24Decay:
+指标：
+
+```text
+5d_count_h0
+```
+
+使用 Rank4-10 的 Post24Decay：
 
 ```text
 Post24Decay = mean(future_return_48h - future_return_24h)
 ```
 
-Window:
+窗口：
 
-- Fixed count: latest 70 mature Rank4-10 observations
-- Approximate calendar length: 5 days
-- Hysteresis: none (`h0`)
-- Warm-up: at least 30 days or at least 70 mature observations; before warm-up, state is `GREEN`
-- Look-ahead rule: only observations whose 48H future window is complete before trade time are eligible
+- 最近 70 个成熟 Rank4-10 observation
+- 约等于 5 天
+- 无 hysteresis
+- warm-up：至少 30 天或至少 70 个成熟 observation
+- warm-up 前状态为 GREEN
 
-State:
+只允许使用 48H future window 已经完成的 observation，不允许未来数据。
 
-- `GREEN`: normal
-- `YELLOW`: current same-window Post24Decay <= walk-forward historical Q10
-- `RED`: current same-window Post24Decay <= walk-forward historical Q5
+## 4. 状态定义
 
-## Response Matrix
+| 状态 | 条件 |
+|---|---|
+| GREEN | 正常 |
+| YELLOW | 当前 Post24Decay <= walk-forward Q10 |
+| RED | 当前 Post24Decay <= walk-forward Q5 |
+
+## 5. 响应矩阵
 
 | Regime | Bucket A | Bucket B | Bucket C |
 |---|---|---|---|
-| GREEN | base | base | base |
-| YELLOW | cap to 2x | cap to 2x | base |
-| RED | cap to 1x | off | base |
+| GREEN | 基础规则 | 基础规则 | 基础规则 |
+| YELLOW | 杠杆封顶 2x | 杠杆封顶 2x | 基础规则 |
+| RED | 杠杆封顶 1x | 关闭 | 基础规则 |
 
-Bucket definitions:
+当时的 bucket 定义：
 
-- Bucket A: `10% <= gain_24h < 20%`, Rank2/Rank3, no volume filter, original 3x
-- Bucket B: `20% <= gain_24h < 40%`, Rank2/Rank3, `1.5 <= volume_24h_ratio_7d < 5`, original Rank2 3x / Rank3 5x
-- Bucket C: `40% <= gain_24h < 60%`, Rank2 only, `3 <= volume_24h_ratio_7d < 5.5`, original 2x
+- Bucket A：`10% <= gain_24h < 20%`，Rank2/Rank3，无量比过滤，原始 3x
+- Bucket B：`20% <= gain_24h < 40%`，Rank2/Rank3，`1.5 <= volume_24h_ratio_7d < 5`，原始 Rank2 3x / Rank3 5x
+- Bucket C：`40% <= gain_24h < 60%`，仅 Rank2，`3 <= volume_24h_ratio_7d < 5.5`，原始 2x
 
-## Headline Metrics
+## 6. 研究结果
 
-Original/VELVET-aligned baseline:
+original / VELVET 对齐 baseline：
 
-- Evaluated positions: 309
-- Net PnL: 10967.08U
-- PF: 2.00
-- Win rate: 30.42%
-- Median return: -23.82%
-- Max drawdown: -2539.27U
-- Liquidations: 55
+- 评估仓位：309
+- 净收益：10967.08U
+- PF：2.00
+- 胜率：30.42%
+- 中位收益：-23.82%
+- 最大回撤：-2539.27U
+- 爆仓：55
 
-Backup candidate:
+备选方案：
 
-- Evaluated positions: 297
-- Closed trades: 291
-- Open mark-to-market: 6
-- Net PnL: 11460.16U
-- PF: 2.13
-- Win rate: 30.98%
-- Median return: -22.46%
-- Max drawdown: -2308.92U
-- Liquidations: 49
-- Regime OFF skips: 14
-- Average leverage: 3.53x
-- July PnL: -1388.66U
-- July loss saved vs baseline: 230.35U
-- Jan-Jun profit sacrifice: -262.72U, meaning Jan-Jun improved rather than sacrificed
+- 评估仓位：297
+- 已关闭交易：291
+- 未平仓 mark-to-market：6
+- 净收益：11460.16U
+- PF：2.13
+- 胜率：30.98%
+- 中位收益：-22.46%
+- 最大回撤：-2308.92U
+- 爆仓：49
+- Regime OFF 跳过：14
+- 平均杠杆：3.53x
+- 7 月 PnL：-1388.66U
+- 7 月相对 baseline 少亏：230.35U
 
-## Monthly Delta Vs Baseline
+## 7. 当前决策
 
-| Month | Baseline PnL | Candidate PnL | Delta | Baseline Liq | Candidate Liq |
-|---|---:|---:|---:|---:|---:|
-| 2026-01 | 1089.51 | 1398.34 | +308.83 | 3 | 2 |
-| 2026-02 | 836.15 | 695.97 | -140.18 | 4 | 4 |
-| 2026-03 | 1889.35 | 1887.00 | -2.35 | 7 | 7 |
-| 2026-04 | 1156.66 | 1253.09 | +96.43 | 5 | 4 |
-| 2026-05 | 458.72 | 458.72 | +0.00 | 8 | 8 |
-| 2026-06 | 4504.23 | 4504.23 | +0.00 | 12 | 12 |
-| 2026-07 | -1619.01 | -1388.66 | +230.35 | 16 | 12 |
-| 2026-08 | 2651.48 | 2651.48 | +0.00 | 0 | 0 |
+保留为历史备选方案。
 
-## Decision Note
-
-Keep this as the backup candidate. Continue testing other Regime parameters, but compare every new result against this candidate and the original baseline. Do not promote it to the main strategy until later tests fail to find a better candidate and the result remains acceptable out of sample.
+当前主策略不使用该方案；当前主策略使用 FR3/YR1 Regime。

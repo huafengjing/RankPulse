@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.research.top3_regime_engine import (
+from src.research.rankpulse_regime_engine import (
     MODEL_NAME,
     RegimeEngineConfig,
     RegimeEvaluation,

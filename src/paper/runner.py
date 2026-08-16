@@ -14,8 +14,8 @@ from src.paper.trading import (
     PaperTradingEngine,
     PaperWeakExitCheck,
 )
-from src.research.top3_strategy_rules import HOUR_MS, signal_rejection_reason
-from src.research.top3_strategy_rules import Top3RegimeContext
+from src.research.rankpulse_strategy_rules import HOUR_MS, signal_rejection_reason
+from src.research.rankpulse_strategy_rules import Top3RegimeContext
 
 
 class PaperMarketClient(Protocol):

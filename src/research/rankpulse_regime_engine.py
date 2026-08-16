@@ -10,19 +10,21 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from src.research.top3_strategy_rules import Top3RegimeContext, Top3Signal, leverage_for_signal
+from src.research.rankpulse_regime_constants import (
+    MIN_PRIOR_VALUES,
+    MODEL_NAME,
+    MODEL_VERSION,
+    RECOVERY_MODEL_NAME,
+    RECOVERY_WINDOW,
+    RISK_MODEL_NAME,
+    RISK_WINDOW,
+    WARMUP_DAYS,
+)
+from src.research.rankpulse_strategy_rules import Top3RegimeContext, Top3Signal, leverage_for_signal
 
 
 HOUR_MS = 60 * 60 * 1000
 DAY_MS = 24 * HOUR_MS
-MODEL_NAME = "FR_avg_return24_l3_gt_0_fr3_yr1"
-MODEL_VERSION = 1
-RISK_MODEL_NAME = "D_b_r3_decay_l15"
-RECOVERY_MODEL_NAME = "avg_return24_l3_gt_0"
-RISK_WINDOW = 15
-RECOVERY_WINDOW = 3
-MIN_PRIOR_VALUES = 10
-WARMUP_DAYS = 30
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.market.top3_leaderboard import LeaderboardEntry
+from src.market.rankpulse_leaderboard import LeaderboardEntry
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,7 @@ from src.execution.testnet_state import TestnetState, TestnetStateStore
 from src.market.binance_futures import BinanceFuturesMarketClient
 from src.notify.telegram import TelegramNotifier
 from src.paper.store import PaperEventLogger
-from src.research.top3_regime_context_provider import regime_context_provider_for_runtime
+from src.research.rankpulse_regime_context_provider import regime_context_provider_for_runtime
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -116,6 +116,9 @@ def reconcile_startup_state(
             if position.symbol not in stale_symbols
         ],
         closed_positions=state.closed_positions,
+        bootstrap_metadata=state.bootstrap_metadata,
+        bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+        closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
         last_signal_time_ms=state.last_signal_time_ms,
         last_exit_check_time_ms=state.last_exit_check_time_ms,
         last_information_time_ms=state.last_information_time_ms,
@@ -257,7 +260,7 @@ def render_cycle_summary(summary: dict[str, object]) -> str:
             f"本次新开仓: {_format_symbols(summary.get('opened'))}",
             f"提前退出: {_format_symbols(summary.get('weak_exits'))}",
             f"6D计划退出: {_format_symbols(summary.get('planned_exits'))}",
-            f"当前持仓: {_format_symbols(summary.get('open_positions'))}",
+            f"{_open_positions_label(summary)}: {_format_symbols(summary.get('open_positions'))}",
             f"行情预检: {'已发送' if summary.get('preflight_sent') else '未触发'}",
             f"23:00观察信息: {'已发送' if summary.get('information_sent') else '未发送'}",
             f"已处理信号时间: {_format_time_value(summary.get('last_signal_time_ms'))}",
@@ -265,6 +268,14 @@ def render_cycle_summary(summary: dict[str, object]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _open_positions_label(summary: dict[str, object]) -> str:
+    if summary.get("open_positions_source") == "binance":
+        return "当前持仓(Binance)"
+    if summary.get("open_positions_source") == "local":
+        return "当前持仓(本地)"
+    return "当前持仓"
 
 
 def _format_phase_error(error: dict[str, object]) -> list[str]:
@@ -276,6 +287,8 @@ def _format_phase_error(error: dict[str, object]) -> list[str]:
         "information_signal": "23:00观察信息",
         "market_preflight": "行情/IP预检",
         "hourly_exit": "持仓退出检查",
+        "position_sync": "Binance真实持仓同步",
+        "bootstrap": "首次启动Bootstrap",
     }.get(phase, phase)
 
     if "Market data request failed" in message:
@@ -458,6 +471,14 @@ def _run_runner_cycle(
     opened: list[object] = []
     preflight_sent = False
     information_sent = False
+    bootstrap_failed = False
+
+    try:
+        if hasattr(runner, "ensure_bootstrap"):
+            runner.ensure_bootstrap(current_ms)  # type: ignore[attr-defined]
+    except Exception as exc:
+        errors.append(_phase_error("bootstrap", exc))
+        bootstrap_failed = True
 
     try:
         preflight_sent = runner.run_market_preflight_cycle(current_ms)  # type: ignore[attr-defined]
@@ -474,10 +495,28 @@ def _run_runner_cycle(
     except Exception as exc:
         errors.append(_phase_error("information_signal", exc))
 
-    try:
-        opened = runner.run_signal_cycle(current_ms)  # type: ignore[attr-defined]
-    except Exception as exc:
-        errors.append(_phase_error("signal", exc))
+    if not bootstrap_failed:
+        try:
+            opened = runner.run_signal_cycle(current_ms)  # type: ignore[attr-defined]
+        except Exception as exc:
+            errors.append(_phase_error("signal", exc))
+
+    open_positions_source = "local"
+    if hasattr(runner, "sync_open_positions_from_exchange"):
+        try:
+            open_position_symbols = runner.sync_open_positions_from_exchange()  # type: ignore[attr-defined]
+            open_positions_source = "binance"
+        except Exception as exc:
+            errors.append(_phase_error("position_sync", exc))
+            open_position_symbols = [
+                position.symbol
+                for position in state_store.load().open_positions
+            ]
+    else:
+        open_position_symbols = [
+            position.symbol
+            for position in state_store.load().open_positions
+        ]
 
     state = state_store.load()
     return {
@@ -486,7 +525,8 @@ def _run_runner_cycle(
         "planned_exits": [position.symbol for position in planned_exits],  # type: ignore[attr-defined]
         "preflight_sent": preflight_sent,
         "information_sent": information_sent,
-        "open_positions": [position.symbol for position in state.open_positions],
+        "open_positions": open_position_symbols,
+        "open_positions_source": open_positions_source,
         "last_signal_time_ms": state.last_signal_time_ms,
         "errors": errors,
     }

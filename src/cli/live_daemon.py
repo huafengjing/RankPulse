@@ -21,7 +21,7 @@ from src.execution.testnet_state import TestnetStateStore
 from src.market.binance_futures import BinanceFuturesMarketClient
 from src.notify.telegram import TelegramNotifier
 from src.paper.store import PaperEventLogger
-from src.research.top3_regime_context_provider import regime_context_provider_for_runtime
+from src.research.rankpulse_regime_context_provider import regime_context_provider_for_runtime
 
 
 def main() -> None:

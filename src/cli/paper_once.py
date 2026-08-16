@@ -12,11 +12,11 @@ from src.config.state_paths import state_paths_for
 from src.market.binance_futures import BinanceFuturesMarketClient
 from src.paper.runner import PaperTradingRunner
 from src.paper.store import PaperEventLogger, PaperStateStore
-from src.research.top3_regime_context_provider import regime_context_provider_from_path
+from src.research.rankpulse_regime_context_provider import regime_context_provider_from_path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run one Top3 paper trading cycle.")
+    parser = argparse.ArgumentParser(description="Run one RankPulse paper trading cycle.")
     parser.add_argument("--state-path", default=None)
     parser.add_argument("--event-log-path", default=None)
     parser.add_argument("--now-ms", type=int, default=None)

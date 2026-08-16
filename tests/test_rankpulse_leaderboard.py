@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.market.binance_futures import Kline
-from src.market.top3_leaderboard import build_top3_leaderboard, gain_24h_from_1h_klines
+from src.market.rankpulse_leaderboard import build_top3_leaderboard, gain_24h_from_1h_klines
 
 
 HOUR_MS = 60 * 60 * 1000

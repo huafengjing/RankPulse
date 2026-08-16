@@ -5,9 +5,8 @@ import math
 from pathlib import Path
 
 from src.config.settings import AppSettings
-from src.research.top3_regime_engine import MODEL_NAME, MODEL_VERSION
-from src.research.top3_regime_generator import generate_context
-from src.research.top3_strategy_rules import Top3RegimeContext
+from src.research.rankpulse_regime_constants import MODEL_NAME, MODEL_VERSION
+from src.research.rankpulse_strategy_rules import Top3RegimeContext
 
 
 class JsonRegimeContextProvider:
@@ -38,6 +37,8 @@ class AutoGeneratingRegimeContextProvider:
         self.reader = JsonRegimeContextProvider(self.path)
 
     def context_at(self, signal_time_ms: int) -> Top3RegimeContext:
+        from src.research.rankpulse_regime_generator import generate_context
+
         generate_context(
             evaluation_time_ms=signal_time_ms,
             output_path=self.path,

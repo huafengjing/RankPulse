@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.research.top3_strategy_rules import volume_24h_ratio_7d
+from src.research.rankpulse_strategy_rules import volume_24h_ratio_7d
 
 
 def test_volume_ratio_uses_latest_42_completed_4h_candles_including_recent_24h() -> None:

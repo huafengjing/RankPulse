@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.market.binance_futures import Kline
-from src.research.top3_strategy_rules import HOUR_MS, Top3Signal, volume_24h_ratio_7d
+from src.research.rankpulse_strategy_rules import HOUR_MS, Top3Signal, volume_24h_ratio_7d
 
 
 @dataclass(frozen=True)

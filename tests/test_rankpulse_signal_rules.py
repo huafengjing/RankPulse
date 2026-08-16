@@ -1,10 +1,28 @@
 from __future__ import annotations
 
-from src.research.top3_strategy_rules import Top3Signal, is_trade_signal
+from src.research.rankpulse_strategy_rules import Top3Signal, is_trade_signal
 
 
-def test_rank1_signal_is_not_traded() -> None:
+def test_rank1_20_40_volume_2_3_is_traded() -> None:
     signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.25, volume_24h_ratio_7d=2.5)
+
+    assert is_trade_signal(signal) is True
+
+
+def test_rank1_20_40_volume_5_6_is_traded() -> None:
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.25, volume_24h_ratio_7d=5.5)
+
+    assert is_trade_signal(signal) is True
+
+
+def test_rank1_40_60_volume_2_3_is_traded() -> None:
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.45, volume_24h_ratio_7d=2.5)
+
+    assert is_trade_signal(signal) is True
+
+
+def test_rank1_outside_tuned_cells_is_filtered() -> None:
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.25, volume_24h_ratio_7d=4.0)
 
     assert is_trade_signal(signal) is False
 

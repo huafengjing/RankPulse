@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.market.binance_futures import Ticker24hrStat
-from src.market.top3_leaderboard import LeaderboardEntry
+from src.market.rankpulse_leaderboard import LeaderboardEntry
 
 
 def build_top3_from_24hr_tickers(

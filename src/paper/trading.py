@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from src.research.top3_strategy_rules import (
+from src.research.rankpulse_strategy_rules import (
     ENABLE_12H_WEAK_EXIT,
     ENABLE_4H_EXTREME_WEAK_EXIT,
     Top3Signal,
@@ -12,6 +12,7 @@ from src.research.top3_strategy_rules import (
     is_trade_signal,
     leverage_for_signal,
     planned_exit_time_ms,
+    planned_hold_days_for_signal,
     should_exit_extreme_weak_4h,
     should_exit_early_12h,
     signal_rejection_reason,
@@ -163,7 +164,7 @@ class PaperTradingEngine:
             volume_24h_ratio_7d=signal.volume_24h_ratio_7d,
             leverage=leverage,
             margin_usdt=self.config.margin_usdt_per_trade,
-            planned_exit_time_ms=planned_exit_time_ms(signal.signal_time_ms),
+            planned_exit_time_ms=planned_exit_time_ms(signal.signal_time_ms, strategy_signal),
             extreme_weak_exit_check_time_ms=extreme_weak_exit_time_ms(signal.signal_time_ms),
         )
         self._open_positions[position.symbol] = position
@@ -225,7 +226,7 @@ class PaperTradingEngine:
             position=position,
             exit_time_ms=exit_time_ms,
             exit_price=fill_price,
-            exit_reason="planned_6d",
+            exit_reason=f"planned_{planned_hold_days_for_signal(position_strategy_signal(position))}d",
         )
 
     def open_position(self, symbol: str) -> PaperPosition | None:
@@ -258,3 +259,12 @@ class PaperTradingEngine:
         self.closed_trades.append(trade_exit)
         del self._open_positions[position.symbol]
         return trade_exit
+
+
+def position_strategy_signal(position: PaperPosition) -> Top3Signal:
+    return Top3Signal(
+        symbol=position.symbol,
+        rank=position.rank,
+        gain_24h=position.gain_24h,
+        volume_24h_ratio_7d=position.volume_24h_ratio_7d,
+    )

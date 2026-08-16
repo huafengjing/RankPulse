@@ -1,1 +1,1 @@
-"""Command-line entrypoints for the Top3 trader."""
+"""Command-line entrypoints for RankPulse."""

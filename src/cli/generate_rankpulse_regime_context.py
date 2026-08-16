@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.config.settings import AppSettings
-from src.research.top3_regime_generator import (
+from src.research.rankpulse_regime_generator import (
     DEFAULT_OUTPUT_DIR,
     compare_with_reference,
     full_timeline,
@@ -18,9 +18,14 @@ from src.research.top3_regime_generator import (
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate FR3/YR1 Top3 regime context.")
+    parser = argparse.ArgumentParser(description="Generate FR3/YR1 RankPulse regime context.")
     parser.add_argument("--as-of", type=str, default="", help="UTC timestamp, e.g. 2026-07-06T00:00:00Z")
-    parser.add_argument("--output", type=str, default="", help="Context JSON output path. Defaults to TOP3_REGIME_CONTEXT_PATH.")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help="Context JSON output path. Defaults to RANKPULSE_REGIME_CONTEXT_PATH, with TOP3_REGIME_CONTEXT_PATH as legacy fallback.",
+    )
     parser.add_argument("--inspect", action="store_true", help="Print context but do not write JSON.")
     parser.add_argument("--rebuild-opportunities", action="store_true", help="Rebuild Bucket B Rank3 opportunities from local kline cache.")
     parser.add_argument("--replay", action="store_true", help="Write full replay timeline and compare with frozen reference.")

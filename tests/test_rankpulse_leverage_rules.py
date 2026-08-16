@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.research.top3_strategy_rules import (
+from src.research.rankpulse_strategy_rules import (
     Top3Signal,
     Top3RegimeContext,
     leverage_for_signal,
@@ -12,6 +12,24 @@ def test_10_20_bucket_uses_3x() -> None:
     signal = Top3Signal(symbol="AAAUSDT", rank=3, gain_24h=0.15, volume_24h_ratio_7d=0.8)
 
     assert leverage_for_signal(signal) == 3
+
+
+def test_rank1_20_40_volume_2_3_uses_3x() -> None:
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.25, volume_24h_ratio_7d=2.5)
+
+    assert leverage_for_signal(signal, Top3RegimeContext(state="RED")) == 3
+
+
+def test_rank1_20_40_volume_5_6_uses_5x() -> None:
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.25, volume_24h_ratio_7d=5.5)
+
+    assert leverage_for_signal(signal, Top3RegimeContext(state="RED")) == 5
+
+
+def test_rank1_40_60_volume_2_3_uses_5x() -> None:
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.45, volume_24h_ratio_7d=2.5)
+
+    assert leverage_for_signal(signal, Top3RegimeContext(state="RED")) == 5
 
 
 def test_20_40_rank2_uses_3x() -> None:

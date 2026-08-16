@@ -38,6 +38,23 @@ def test_settings_defaults_are_safe() -> None:
     assert settings.enable_4h_extreme_weak_exit is True
     assert settings.top3_regime_enabled is False
     assert settings.top3_regime_context_auto_generate is True
+    assert settings.rank1_bootstrap_enabled is True
+    assert settings.rank1_activation_time_ms is None
+    assert settings.rank1_bootstrap_strategy_version == "rank1_candidate_v1"
+
+
+def test_rank1_bootstrap_settings_from_env() -> None:
+    settings = AppSettings.from_env(
+        {
+            "RANK1_BOOTSTRAP_ENABLED": "false",
+            "RANK1_ACTIVATION_TIME_MS": "1786752000000",
+            "RANK1_BOOTSTRAP_STRATEGY_VERSION": "rank1_candidate_v2",
+        }
+    )
+
+    assert settings.rank1_bootstrap_enabled is False
+    assert settings.rank1_activation_time_ms == 1786752000000
+    assert settings.rank1_bootstrap_strategy_version == "rank1_candidate_v2"
 
 
 def test_test_fast_settings_from_env() -> None:
@@ -66,6 +83,23 @@ def test_test_fast_settings_from_env() -> None:
     assert settings.telegram_chat_id == "456"
     assert settings.top3_regime_enabled is True
     assert settings.top3_regime_context_auto_generate is False
+
+
+def test_rankpulse_regime_env_names_override_legacy_top3_names() -> None:
+    settings = AppSettings.from_env(
+        {
+            "TOP3_REGIME_ENABLED": "false",
+            "RANKPULSE_REGIME_ENABLED": "true",
+            "TOP3_REGIME_CONTEXT_AUTO_GENERATE": "true",
+            "RANKPULSE_REGIME_CONTEXT_AUTO_GENERATE": "false",
+            "TOP3_REGIME_CONTEXT_PATH": "legacy.json",
+            "RANKPULSE_REGIME_CONTEXT_PATH": "rankpulse.json",
+        }
+    )
+
+    assert settings.top3_regime_enabled is True
+    assert settings.top3_regime_context_auto_generate is False
+    assert settings.top3_regime_context_path == "rankpulse.json"
 
 
 def test_enforce_safety_lock_blocks_run_when_true() -> None:

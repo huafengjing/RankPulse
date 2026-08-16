@@ -1,1 +1,1 @@
-"""Paper trading components for the Top3 strategy."""
+"""Paper trading components for RankPulse."""

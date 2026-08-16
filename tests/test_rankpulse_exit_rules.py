@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.research.top3_strategy_rules import (
+from src.research.rankpulse_strategy_rules import (
     ENABLE_12H_WEAK_EXIT,
     ENABLE_4H_EXTREME_WEAK_EXIT,
     DAY_MS,
@@ -8,6 +8,7 @@ from src.research.top3_strategy_rules import (
     early_exit_time_ms,
     extreme_weak_exit_time_ms,
     planned_exit_time_ms,
+    Top3Signal,
     should_exit_extreme_weak_4h,
     should_exit_early_12h,
 )
@@ -17,6 +18,20 @@ def test_holding_full_6d_exits_at_entry_plus_6d() -> None:
     entry_time_ms = 1_700_000_000_000
 
     assert planned_exit_time_ms(entry_time_ms) == entry_time_ms + 6 * DAY_MS
+
+
+def test_rank1_tuned_signal_exits_at_entry_plus_5d() -> None:
+    entry_time_ms = 1_700_000_000_000
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.25, volume_24h_ratio_7d=2.5)
+
+    assert planned_exit_time_ms(entry_time_ms, signal) == entry_time_ms + 5 * DAY_MS
+
+
+def test_rank1_5x_tuned_signal_exits_at_entry_plus_2d() -> None:
+    entry_time_ms = 1_700_000_000_000
+    signal = Top3Signal(symbol="AAAUSDT", rank=1, gain_24h=0.45, volume_24h_ratio_7d=2.5)
+
+    assert planned_exit_time_ms(entry_time_ms, signal) == entry_time_ms + 2 * DAY_MS
 
 
 def test_12h_weak_exit_condition_requires_mfe_and_negative_close_return_only() -> None:

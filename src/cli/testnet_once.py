@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 import time
 
+from src.cli.testnet_daemon import render_cycle_summary
 from src.config.lock import FileLock
 from src.config.modes import TradingMode
 from src.config.settings import AppSettings
@@ -14,7 +14,7 @@ from src.execution.testnet_state import TestnetStateStore
 from src.market.binance_futures import BinanceFuturesMarketClient
 from src.notify.telegram import TelegramNotifier
 from src.paper.store import PaperEventLogger
-from src.research.top3_regime_context_provider import regime_context_provider_for_runtime
+from src.research.rankpulse_regime_context_provider import regime_context_provider_for_runtime
 
 
 def main() -> None:
@@ -56,13 +56,31 @@ def main() -> None:
                 paths.state_path.parent / "regime_context.json",
             ),
         )
+        runner.ensure_bootstrap(now_ms)
         weak_exits, planned_exits = runner.run_hourly_exit_cycle(now_ms)
         information_sent = runner.run_information_cycle(now_ms)
         opened = runner.run_signal_cycle(now_ms)
+        errors: list[dict[str, str]] = []
+        try:
+            open_position_symbols = runner.sync_open_positions_from_exchange()
+            open_positions_source = "binance"
+        except Exception as exc:
+            errors.append(
+                {
+                    "phase": "position_sync",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            open_position_symbols = [
+                position.symbol
+                for position in TestnetStateStore(paths.state_path).load().open_positions
+            ]
+            open_positions_source = "local"
         state = TestnetStateStore(paths.state_path).load()
 
         print(
-            json.dumps(
+            render_cycle_summary(
                 {
                     "trading_mode": TradingMode.TESTNET.value,
                     "signal_mode": settings.signal_mode.value,
@@ -71,10 +89,12 @@ def main() -> None:
                     "weak_exits": [position.symbol for position in weak_exits],
                     "planned_exits": [position.symbol for position in planned_exits],
                     "information_sent": information_sent,
-                    "open_positions": [position.symbol for position in state.open_positions],
-                },
-                ensure_ascii=False,
-                sort_keys=True,
+                    "open_positions": open_position_symbols,
+                    "open_positions_source": open_positions_source,
+                    "errors": errors,
+                    "last_signal_time_ms": state.last_signal_time_ms,
+                    "preflight_sent": False,
+                }
             )
         )
 

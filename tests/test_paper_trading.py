@@ -11,8 +11,8 @@ from src.paper.trading import (
     PaperTradingEngine,
     PaperWeakExitCheck,
 )
-from src.research.top3_strategy_rules import DAY_MS, HOUR_MS
-from src.research.top3_strategy_rules import Top3RegimeContext
+from src.research.rankpulse_strategy_rules import DAY_MS, HOUR_MS
+from src.research.rankpulse_strategy_rules import Top3RegimeContext
 
 
 def test_paper_trading_opens_long_position_with_simulated_fill_price() -> None:
@@ -56,6 +56,26 @@ def test_paper_trading_uses_regime_context_leverage() -> None:
 
     assert position is not None
     assert position.leverage == 1
+
+
+def test_paper_trading_opens_rank1_with_tuned_leverage_and_5d_exit() -> None:
+    engine = PaperTradingEngine()
+    signal = PaperSignal(
+        symbol="RANK1USDT",
+        rank=1,
+        gain_24h=0.45,
+        volume_24h_ratio_7d=2.5,
+        snapshot_hour_bj="08:00",
+        signal_time_ms=1_700_000_000_000,
+        fill_price=2.5,
+        regime_context=Top3RegimeContext(state="RED"),
+    )
+
+    position = engine.on_signal(signal)
+
+    assert position is not None
+    assert position.leverage == 5
+    assert position.planned_exit_time_ms == signal.signal_time_ms + 2 * DAY_MS
 
 
 def test_paper_trading_blocks_same_symbol_until_actual_exit() -> None:

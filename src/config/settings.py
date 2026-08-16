@@ -39,6 +39,9 @@ class AppSettings:
     top3_regime_enabled: bool = False
     top3_regime_context_auto_generate: bool = True
     top3_regime_context_path: str = ""
+    rank1_bootstrap_enabled: bool = True
+    rank1_activation_time_ms: int | None = None
+    rank1_bootstrap_strategy_version: str = "rank1_candidate_v1"
 
     @classmethod
     def from_env_file(cls, path: str = ".env") -> AppSettings:
@@ -67,9 +70,14 @@ class AppSettings:
             binance_live_api_secret=env.get("BINANCE_LIVE_API_SECRET", ""),
             telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
-            top3_regime_enabled=_bool(env.get("TOP3_REGIME_ENABLED", "false")),
-            top3_regime_context_auto_generate=_bool(env.get("TOP3_REGIME_CONTEXT_AUTO_GENERATE", "true")),
-            top3_regime_context_path=env.get("TOP3_REGIME_CONTEXT_PATH", ""),
+            top3_regime_enabled=_bool(env.get("RANKPULSE_REGIME_ENABLED", env.get("TOP3_REGIME_ENABLED", "false"))),
+            top3_regime_context_auto_generate=_bool(
+                env.get("RANKPULSE_REGIME_CONTEXT_AUTO_GENERATE", env.get("TOP3_REGIME_CONTEXT_AUTO_GENERATE", "true"))
+            ),
+            top3_regime_context_path=env.get("RANKPULSE_REGIME_CONTEXT_PATH", env.get("TOP3_REGIME_CONTEXT_PATH", "")),
+            rank1_bootstrap_enabled=_bool(env.get("RANK1_BOOTSTRAP_ENABLED", "true")),
+            rank1_activation_time_ms=_optional_int(env.get("RANK1_ACTIVATION_TIME_MS")),
+            rank1_bootstrap_strategy_version=env.get("RANK1_BOOTSTRAP_STRATEGY_VERSION", "rank1_candidate_v1"),
         )
 
     def assert_can_run(self) -> None:
@@ -90,3 +98,9 @@ class AppSettings:
 
 def _bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _optional_int(value: str | None) -> int | None:
+    if value is None or value.strip() == "":
+        return None
+    return int(value)

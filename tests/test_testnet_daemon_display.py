@@ -141,6 +141,31 @@ def test_cycle_summary_is_rendered_as_readable_chinese_text() -> None:
     assert "已处理信号时间: 2026-06-26 08:00:00 北京时间" in output
 
 
+def test_once_style_empty_cycle_summary_is_human_readable() -> None:
+    output = render_cycle_summary(
+        {
+            "errors": [],
+            "information_sent": False,
+            "last_signal_time_ms": None,
+            "now_ms": bj_ms(26, 12),
+            "open_positions": ["TLMUSDT", "CLOUSDT"],
+            "open_positions_source": "binance",
+            "opened": [],
+            "planned_exits": [],
+            "preflight_sent": False,
+            "signal_mode": "production",
+            "trading_mode": "live",
+            "weak_exits": [],
+        }
+    )
+
+    assert "TLMUSDT" in output
+    assert "CLOUSDT" in output
+    assert "当前持仓(Binance)" in output
+    assert '"opened"' not in output
+    assert '"open_positions"' not in output
+
+
 def test_cycle_summary_renders_errors_without_json_dump() -> None:
     output = render_cycle_summary(
         {

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from src.research.top3_strategy_rules import extreme_weak_exit_time_ms
+from src.research.rankpulse_strategy_rules import extreme_weak_exit_time_ms
 
 
 @dataclass(frozen=True)
@@ -41,11 +41,57 @@ class TestnetClosedPosition:
 
 
 @dataclass(frozen=True)
+class BootstrapMetadata:
+    bootstrap_completed: bool = False
+    activation_time_ms: int | None = None
+    strategy_version: str = "rank1_candidate_v1"
+
+
+@dataclass(frozen=True)
+class BootstrapVirtualPosition:
+    source: str
+    strategy_version: str
+    unique_key: str
+    symbol: str
+    rank: int
+    entry_time_ms: int
+    entry_price: float
+    qty: float
+    leverage: int
+    planned_exit_time_ms: int
+    weak_exit_check_time_ms: int
+    extreme_weak_exit_check_time_ms: int
+    gain_24h: float
+    volume_24h_ratio_7d: float | None
+    extreme_weak_exit_checked: bool = False
+    weak_exit_checked: bool = False
+
+
+@dataclass(frozen=True)
+class BootstrapClosedVirtualPosition:
+    source: str
+    strategy_version: str
+    unique_key: str
+    symbol: str
+    rank: int
+    entry_time_ms: int
+    exit_time_ms: int
+    entry_price: float
+    exit_price: float
+    qty: float
+    leverage: int
+    exit_reason: str
+
+
+@dataclass(frozen=True)
 class TestnetState:
     __test__ = False
 
     open_positions: list[TestnetPosition]
     closed_positions: list[TestnetClosedPosition]
+    bootstrap_metadata: BootstrapMetadata = field(default_factory=BootstrapMetadata)
+    bootstrap_virtual_positions: list[BootstrapVirtualPosition] = field(default_factory=list)
+    closed_bootstrap_virtual_positions: list[BootstrapClosedVirtualPosition] = field(default_factory=list)
     last_signal_time_ms: int | None = None
     last_exit_check_time_ms: int | None = None
     last_information_time_ms: int | None = None
@@ -53,6 +99,15 @@ class TestnetState:
 
     def open_position(self, symbol: str) -> TestnetPosition | None:
         return next((position for position in self.open_positions if position.symbol == symbol), None)
+
+    def bootstrap_virtual_position(self, symbol: str) -> BootstrapVirtualPosition | None:
+        return next(
+            (position for position in self.bootstrap_virtual_positions if position.symbol == symbol),
+            None,
+        )
+
+    def blocking_position_count(self) -> int:
+        return len(self.open_positions) + len(self.bootstrap_virtual_positions)
 
 
 class TestnetStateStore:
@@ -68,6 +123,15 @@ class TestnetStateStore:
         return TestnetState(
             open_positions=[TestnetPosition(**_position_with_defaults(item)) for item in raw_state.get("open_positions", [])],
             closed_positions=[TestnetClosedPosition(**item) for item in raw_state.get("closed_positions", [])],
+            bootstrap_metadata=BootstrapMetadata(**raw_state.get("bootstrap_metadata", {})),
+            bootstrap_virtual_positions=[
+                BootstrapVirtualPosition(**item)
+                for item in raw_state.get("bootstrap_virtual_positions", [])
+            ],
+            closed_bootstrap_virtual_positions=[
+                BootstrapClosedVirtualPosition(**item)
+                for item in raw_state.get("closed_bootstrap_virtual_positions", [])
+            ],
             last_signal_time_ms=raw_state.get("last_signal_time_ms"),
             last_exit_check_time_ms=raw_state.get("last_exit_check_time_ms"),
             last_information_time_ms=raw_state.get("last_information_time_ms"),
@@ -82,6 +146,15 @@ class TestnetStateStore:
                 {
                     "open_positions": [asdict(position) for position in state.open_positions],
                     "closed_positions": [asdict(position) for position in state.closed_positions],
+                    "bootstrap_metadata": asdict(state.bootstrap_metadata),
+                    "bootstrap_virtual_positions": [
+                        asdict(position)
+                        for position in state.bootstrap_virtual_positions
+                    ],
+                    "closed_bootstrap_virtual_positions": [
+                        asdict(position)
+                        for position in state.closed_bootstrap_virtual_positions
+                    ],
                     "last_signal_time_ms": state.last_signal_time_ms,
                     "last_exit_check_time_ms": state.last_exit_check_time_ms,
                     "last_information_time_ms": state.last_information_time_ms,
@@ -101,6 +174,9 @@ class TestnetStateStore:
             TestnetState(
                 open_positions=open_positions,
                 closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=state.last_signal_time_ms,
                 last_exit_check_time_ms=state.last_exit_check_time_ms,
                 last_information_time_ms=state.last_information_time_ms,
@@ -124,6 +200,19 @@ class TestnetStateStore:
                     for position in state.open_positions
                 ],
                 closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=[
+                    BootstrapVirtualPosition(
+                        **{
+                            **asdict(position),
+                            "weak_exit_checked": True,
+                        }
+                    )
+                    if position.symbol == symbol
+                    else position
+                    for position in state.bootstrap_virtual_positions
+                ],
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=state.last_signal_time_ms,
                 last_exit_check_time_ms=state.last_exit_check_time_ms,
                 last_information_time_ms=state.last_information_time_ms,
@@ -147,12 +236,72 @@ class TestnetStateStore:
                     for position in state.open_positions
                 ],
                 closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=[
+                    BootstrapVirtualPosition(
+                        **{
+                            **asdict(position),
+                            "extreme_weak_exit_checked": True,
+                        }
+                    )
+                    if position.symbol == symbol
+                    else position
+                    for position in state.bootstrap_virtual_positions
+                ],
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=state.last_signal_time_ms,
                 last_exit_check_time_ms=state.last_exit_check_time_ms,
                 last_information_time_ms=state.last_information_time_ms,
                 last_preflight_time_ms=state.last_preflight_time_ms,
             )
         )
+
+    def close_bootstrap_virtual_position(
+        self,
+        symbol: str,
+        exit_time_ms: int,
+        exit_price: float,
+        reason: str,
+    ) -> BootstrapClosedVirtualPosition | None:
+        state = self.load()
+        position = state.bootstrap_virtual_position(symbol)
+        if position is None:
+            return None
+        closed = BootstrapClosedVirtualPosition(
+            source=position.source,
+            strategy_version=position.strategy_version,
+            unique_key=position.unique_key,
+            symbol=position.symbol,
+            rank=position.rank,
+            entry_time_ms=position.entry_time_ms,
+            exit_time_ms=exit_time_ms,
+            entry_price=position.entry_price,
+            exit_price=exit_price,
+            qty=position.qty,
+            leverage=position.leverage,
+            exit_reason=reason,
+        )
+        self.save(
+            TestnetState(
+                open_positions=state.open_positions,
+                closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=[
+                    item
+                    for item in state.bootstrap_virtual_positions
+                    if item.symbol != symbol
+                ],
+                closed_bootstrap_virtual_positions=[
+                    *state.closed_bootstrap_virtual_positions,
+                    closed,
+                ],
+                last_signal_time_ms=state.last_signal_time_ms,
+                last_exit_check_time_ms=state.last_exit_check_time_ms,
+                last_information_time_ms=state.last_information_time_ms,
+                last_preflight_time_ms=state.last_preflight_time_ms,
+            )
+        )
+        return closed
 
 
 def _position_with_defaults(raw_position: dict[str, object]) -> dict[str, object]:

@@ -9,7 +9,7 @@ from src.market.binance_futures import Kline, Ticker24hrStat
 from src.paper.runner import PaperTradingRunner
 from src.paper.store import PaperEventLogger, PaperStateStore
 from src.paper.trading import PaperTradingEngine
-from src.research.top3_strategy_rules import DAY_MS, HOUR_MS
+from src.research.rankpulse_strategy_rules import DAY_MS, HOUR_MS
 
 
 BEIJING = timezone(timedelta(hours=8))

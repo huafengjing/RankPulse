@@ -7,7 +7,7 @@ from src.market.ticker_leaderboard import build_top3_from_24hr_tickers
 from src.paper.trading import PaperSignal
 from src.config.schedule import is_entry_signal_time
 from src.config.settings import AppSettings
-from src.research.top3_strategy_rules import SIGNAL_HOURS_BJ, Top3RegimeContext, volume_24h_ratio_7d
+from src.research.rankpulse_strategy_rules import SIGNAL_HOURS_BJ, Top3RegimeContext, Top3Signal, rank1_leverage_for_signal, volume_24h_ratio_7d
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -55,7 +55,17 @@ def generate_binance_ticker_rank_signals(
 
     signals: list[PaperSignal] = []
     for entry in top3:
-        if entry.rank not in {2, 3}:
+        if entry.rank not in {1, 2, 3}:
+            continue
+        if entry.rank == 1 and rank1_leverage_for_signal(
+            Top3Signal(
+                symbol=entry.symbol,
+                rank=entry.rank,
+                gain_24h=entry.gain_24h,
+                volume_24h_ratio_7d=entry.volume_24h_ratio_7d,
+                snapshot_hour_bj="00:00",
+            )
+        ) is None:
             continue
         fill_price = latest_prices_by_symbol.get(entry.symbol)
         if fill_price is None:

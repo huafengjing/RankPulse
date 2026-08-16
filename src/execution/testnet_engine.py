@@ -4,6 +4,7 @@ import time
 from dataclasses import asdict
 from typing import Protocol
 
+from src.config.modes import SignalMode
 from src.config.schedule import exit_after_ms
 from src.config.settings import AppSettings
 from src.exchange.binance_filters import SymbolFilters
@@ -17,6 +18,7 @@ from src.execution.testnet_state import (
 )
 from src.paper.store import PaperEventLogger
 from src.paper.trading import PaperSignal
+from src.research.rankpulse_strategy_rules import Top3Signal, planned_exit_time_ms
 
 
 class TestnetClientProtocol(Protocol):
@@ -76,8 +78,52 @@ class TestnetExecutionEngine:
         if state.open_position(signal.symbol) is not None:
             self._log("testnet_open_skipped", {"symbol": signal.symbol, "reason": "local_position"})
             return None
-        if len(state.open_positions) >= self.settings.max_open_positions:
-            self._log("testnet_open_skipped", {"symbol": signal.symbol, "reason": "max_open_positions"})
+        bootstrap_position = state.bootstrap_virtual_position(signal.symbol)
+        if bootstrap_position is not None:
+            self._log(
+                f"{self.event_prefix}_signal_blocked_by_bootstrap",
+                {
+                    "timestamp": signal.signal_time_ms,
+                    "symbol": signal.symbol,
+                    "new_rank": signal.rank,
+                    "blocked_by_rank": bootstrap_position.rank,
+                    "bootstrap_entry_time": bootstrap_position.entry_time_ms,
+                    "expected_exit_time": bootstrap_position.planned_exit_time_ms,
+                    "reason": "SAME_SYMBOL_LOCK_BOOTSTRAP",
+                },
+            )
+            return None
+        if state.blocking_position_count() >= self.settings.max_open_positions:
+            reason = (
+                "PORTFOLIO_CAPACITY_BOOTSTRAP"
+                if state.bootstrap_virtual_positions
+                else "max_open_positions"
+            )
+            self._log(
+                "testnet_open_skipped",
+                {
+                    "timestamp": signal.signal_time_ms,
+                    "symbol": signal.symbol,
+                    "new_rank": signal.rank,
+                    "blocked_by_rank": [
+                        position.rank
+                        for position in state.bootstrap_virtual_positions
+                    ],
+                    "bootstrap_entry_time": [
+                        position.entry_time_ms
+                        for position in state.bootstrap_virtual_positions
+                    ],
+                    "expected_exit_time": [
+                        position.planned_exit_time_ms
+                        for position in state.bootstrap_virtual_positions
+                    ],
+                    "reason": reason,
+                    "bootstrap_virtual_positions": [
+                        position.symbol
+                        for position in state.bootstrap_virtual_positions
+                    ],
+                },
+            )
             return None
         try:
             exchange_positions = self.client.open_positions()
@@ -117,6 +163,7 @@ class TestnetExecutionEngine:
             fallback_price=signal.fill_price,
             fallback_qty=qty,
         )
+        planned_exit_ms = self._planned_exit_time_ms(signal)
         position = TestnetPosition(
             symbol=signal.symbol,
             entry_time_ms=signal.signal_time_ms,
@@ -124,7 +171,7 @@ class TestnetExecutionEngine:
             qty=executed_qty,
             leverage=leverage,
             order_id=order_id,
-            planned_exit_time_ms=signal.signal_time_ms + exit_after_ms("planned", self.settings),
+            planned_exit_time_ms=planned_exit_ms,
             extreme_weak_exit_check_time_ms=signal.signal_time_ms + exit_after_ms("extreme_weak", self.settings),
             weak_exit_check_time_ms=signal.signal_time_ms + exit_after_ms("weak", self.settings),
         )
@@ -132,6 +179,9 @@ class TestnetExecutionEngine:
             TestnetState(
                 open_positions=[*state.open_positions, position],
                 closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=state.last_signal_time_ms,
                 last_exit_check_time_ms=state.last_exit_check_time_ms,
                 last_information_time_ms=state.last_information_time_ms,
@@ -149,6 +199,20 @@ class TestnetExecutionEngine:
         )
         return position
 
+    def _planned_exit_time_ms(self, signal: PaperSignal) -> int:
+        if self.settings.signal_mode == SignalMode.TEST_FAST:
+            return signal.signal_time_ms + exit_after_ms("planned", self.settings)
+        return planned_exit_time_ms(
+            signal.signal_time_ms,
+            Top3Signal(
+                symbol=signal.symbol,
+                rank=signal.rank,
+                gain_24h=signal.gain_24h,
+                volume_24h_ratio_7d=signal.volume_24h_ratio_7d,
+                snapshot_hour_bj=signal.snapshot_hour_bj,
+            ),
+        )
+
     def close_position(self, symbol: str, exit_time_ms: int, reason: str) -> TestnetClosedPosition | None:
         state = self.state_store.load()
         position = state.open_position(symbol)
@@ -161,6 +225,9 @@ class TestnetExecutionEngine:
                 TestnetState(
                     open_positions=[item for item in state.open_positions if item.symbol != symbol],
                     closed_positions=state.closed_positions,
+                    bootstrap_metadata=state.bootstrap_metadata,
+                    bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                    closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
                     last_signal_time_ms=state.last_signal_time_ms,
                     last_exit_check_time_ms=state.last_exit_check_time_ms,
                     last_information_time_ms=state.last_information_time_ms,
@@ -218,6 +285,9 @@ class TestnetExecutionEngine:
             TestnetState(
                 open_positions=[item for item in state.open_positions if item.symbol != symbol],
                 closed_positions=[*state.closed_positions, closed],
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
                 last_signal_time_ms=state.last_signal_time_ms,
                 last_exit_check_time_ms=state.last_exit_check_time_ms,
                 last_information_time_ms=state.last_information_time_ms,

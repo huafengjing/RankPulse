@@ -219,7 +219,7 @@ class TestnetExecutionClient:
         else:
             request = Request(
                 f"{self.base_url}/fapi/v1/time",
-                headers={"User-Agent": "Top3MomentumTrader/0.1"},
+                headers={"User-Agent": "RankPulse/0.1"},
                 method="GET",
             )
             with urlopen(request, timeout=self.timeout_seconds) as response:

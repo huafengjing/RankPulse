@@ -5,7 +5,7 @@ import json
 
 from src.config.modes import TradingMode
 from src.config.settings import AppSettings
-from src.exchange.binance_live import LiveExecutionClient
+from src.exchange.binance_live import BinanceLiveAPIError, LiveExecutionClient
 
 
 def main() -> None:
@@ -23,7 +23,14 @@ def main() -> None:
         api_key=settings.binance_live_api_key,
         api_secret=settings.binance_live_api_secret,
     )
-    report = build_live_diag_report(client)
+    try:
+        report = build_live_diag_report(client)
+    except BinanceLiveAPIError as exc:
+        if args.json:
+            print(json.dumps(live_diag_error_report(exc), ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(render_live_diag_error(exc))
+        raise SystemExit(1) from exc
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return
@@ -109,6 +116,57 @@ def render_live_diag_report(report: dict[str, object]) -> str:
         lines.extend(["", "注意: canTrade=false，API Key 或账户权限还不能进行合约交易。"])
 
     return "\n".join(lines)
+
+
+def live_diag_error_report(exc: BinanceLiveAPIError) -> dict[str, object]:
+    return {
+        "ok": False,
+        "path": exc.path,
+        "http_status": exc.status,
+        "binance_code": exc.code,
+        "binance_message": exc.message,
+        "reason": _diagnose_live_api_error(exc),
+    }
+
+
+def render_live_diag_error(exc: BinanceLiveAPIError) -> str:
+    lines = [
+        "Binance Futures Live 只读诊断失败",
+        "",
+        f"接口: {exc.path}",
+        f"HTTP: {exc.status}",
+        f"Binance code: {exc.code}",
+        f"Binance msg: {exc.message}",
+        "",
+        f"判断: {_diagnose_live_api_error(exc)}",
+    ]
+    if exc.code == -2015:
+        lines.extend(
+            [
+                "",
+                "你现在要检查：",
+                "1. Binance API Key / Secret 是否填对。",
+                "2. API Key 是否开启 Futures / 合约交易权限。",
+                "3. API Key 是否没有开启提现权限。",
+                "4. 如果 API Key 绑定了 IP，确认上面 msg 里的 request ip 已加入白名单。",
+                "5. 改完 Binance 后，重新运行: python -m src.cli.live_diag",
+                "",
+                "本次只是诊断失败，没有下单。",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _diagnose_live_api_error(exc: BinanceLiveAPIError) -> str:
+    if exc.code == -2015:
+        return "API Key 无效、IP 不在白名单、或 API 权限不足。"
+    if exc.code == -1021:
+        return "本机时间和 Binance 服务器时间偏差过大。"
+    if exc.status == 418:
+        return "当前 IP 被 Binance 临时拦截。"
+    if exc.status == 429:
+        return "请求频率过高，被 Binance 限流。"
+    return "Binance signed API 返回错误。"
 
 
 def _find_asset(account: dict[str, object], symbol: str) -> dict[str, object] | None:

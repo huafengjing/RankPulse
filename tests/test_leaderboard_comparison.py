@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.market.leaderboard_compare import compare_leaderboards
-from src.market.top3_leaderboard import LeaderboardEntry
+from src.market.rankpulse_leaderboard import LeaderboardEntry
 
 
 def test_compare_leaderboards_records_rank_level_symbol_differences() -> None:

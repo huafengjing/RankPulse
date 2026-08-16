@@ -6,11 +6,12 @@ import pytest
 
 from src.config.modes import SignalMode, TradingMode
 from src.config.settings import AppSettings
+from src.exchange.binance_testnet import FuturesPosition
 from src.execution.testnet_runner import TestnetTradingRunner, _safe_print
-from src.execution.testnet_state import TestnetStateStore
+from src.execution.testnet_state import TestnetPosition, TestnetState, TestnetStateStore
 from src.market.binance_futures import Kline, Ticker24hrStat
 from src.paper.store import PaperEventLogger
-from src.research.top3_strategy_rules import Top3RegimeContext
+from src.research.rankpulse_strategy_rules import DAY_MS, Top3RegimeContext
 from tests.test_testnet_execution import FakeTestnetClient, _clean_workdir
 
 
@@ -95,6 +96,32 @@ def test_production_signal_cycle_generates_regime_context_before_strategy_with_c
     assert ("set_leverage", "RANK3USDT", 1) in execution_client.calls
 
 
+def test_production_runner_opens_rank1_candidate_with_5d_planned_exit() -> None:
+    workdir = _clean_workdir("testnet_runner_rank1_candidate")
+    now_ms = bj_ms(8, 0)
+    execution_client = FakeTestnetClient()
+    runner = TestnetTradingRunner(
+        market_client=Rank1CandidateMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=TestnetStateStore(workdir / "state.json"),
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.TESTNET,
+            signal_mode=SignalMode.PRODUCTION,
+            position_margin_usdt=10,
+        ),
+    )
+
+    opened = runner.run_signal_cycle(now_ms)
+
+    rank1 = next(position for position in opened if position.symbol == "RANK1USDT")
+    rank2 = next(position for position in opened if position.symbol == "RANK2USDT")
+    assert rank1.leverage == 3
+    assert rank1.planned_exit_time_ms == now_ms + 5 * DAY_MS
+    assert rank2.planned_exit_time_ms == now_ms + 6 * DAY_MS
+    assert ("set_leverage", "RANK1USDT", 3) in execution_client.calls
+
+
 def test_regime_generation_failure_fails_closed_before_signal_or_order() -> None:
     workdir = _clean_workdir("testnet_runner_regime_fail_closed")
     now_ms = bj_ms(8, 0)
@@ -148,6 +175,41 @@ def test_regime_enabled_failure_never_falls_back_to_baseline_rank3_5x() -> None:
     assert ("set_leverage", "RANK3USDT", 5) not in execution_client.calls
     assert not any(call[0] == "market_open_long" for call in execution_client.calls)
     assert market_client.ticker_calls == 0
+
+
+def test_sync_open_positions_uses_exchange_positions_and_removes_stale_local_state() -> None:
+    workdir = _clean_workdir("testnet_runner_sync_exchange_positions")
+    state_store = TestnetStateStore(workdir / "state.json")
+    state_store.save(
+        TestnetState(
+            open_positions=[
+                _local_position("TLMUSDT"),
+                _local_position("CLOUSDT"),
+            ],
+            closed_positions=[],
+        )
+    )
+    execution_client = FakeTestnetClient()
+    execution_client.exchange_positions = {
+        "CLOUSDT": FuturesPosition("CLOUSDT", 10.0, 1.0),
+        "NEWUSDT": FuturesPosition("NEWUSDT", 5.0, 2.0),
+    }
+    runner = TestnetTradingRunner(
+        market_client=FakeMarketClient(bj_ms(8, 0)),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.LIVE,
+            signal_mode=SignalMode.PRODUCTION,
+        ),
+        event_prefix="live",
+    )
+
+    symbols = runner.sync_open_positions_from_exchange()
+
+    assert symbols == ["CLOUSDT", "NEWUSDT"]
+    assert [position.symbol for position in state_store.load().open_positions] == ["CLOUSDT"]
 
 
 def test_23_information_cycle_does_not_generate_or_advance_regime_context() -> None:
@@ -626,6 +688,16 @@ class FakeMarketClient:
         }
 
 
+class Rank1CandidateMarketClient(FakeMarketClient):
+    def four_hour_klines(self, symbol: str, limit: int = 42, end_time_ms: int | None = None) -> list[Kline]:
+        self.four_hour_symbols.append(symbol)
+        start = (end_time_ms or self.signal_time_ms) - 42 * 4 * 60 * 60 * 1000
+        return [
+            Kline(start + index * 4 * 60 * 60 * 1000, 1, 1, 1, 1, volume, start + (index + 1) * 4 * 60 * 60 * 1000 - 1)
+            for index, volume in enumerate([1.0] * 36 + [4.0] * 6)
+        ]
+
+
 class BlockedMarketClient(FakeMarketClient):
     def usdt_perpetual_symbols(self) -> list[str]:
         raise RuntimeError("Binance API blocked (HTTP 418) for /fapi/v1/exchangeInfo. Do not retry.")
@@ -732,3 +804,17 @@ class FailingRank2ExecutionClient(FakeTestnetClient):
         if symbol == "RANK2USDT":
             raise RuntimeError("rank2 order failed")
         return super().market_open_long(symbol, quantity)
+
+
+def _local_position(symbol: str) -> TestnetPosition:
+    return TestnetPosition(
+        symbol=symbol,
+        entry_time_ms=1_700_000_000_000,
+        entry_price=1.0,
+        qty=1.0,
+        leverage=3,
+        order_id=1,
+        planned_exit_time_ms=1_700_100_000_000,
+        extreme_weak_exit_check_time_ms=1_700_010_000_000,
+        weak_exit_check_time_ms=1_700_020_000_000,
+    )

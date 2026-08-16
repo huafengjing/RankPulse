@@ -1,7 +1,10 @@
 {
-  "id": "top3_main_with_fr3_yr1",
+  "id": "rankpulse_main_with_fr3_yr1",
   "status": "shadow_candidate_enabled_by_context",
   "base_strategy": {
+    "R1-A": "Rank1, 20% <= gain_24h < 40%, 2 <= volume_24h_ratio_7d < 3, 3x, fixed 5D hold",
+    "R1-B": "Rank1, 20% <= gain_24h < 40%, 5 <= volume_24h_ratio_7d < 6, 5x, fixed 2D hold",
+    "R1-C": "Rank1, 40% <= gain_24h < 60%, 2 <= volume_24h_ratio_7d < 3, 5x, fixed 2D hold",
     "A": "10% <= gain_24h < 20%, Rank2/Rank3, 3x",
     "B": "20% <= gain_24h < 40%, Rank2 1.5 <= volume_24h_ratio_7d < 5, Rank3 1.2 <= volume_24h_ratio_7d < 5, base Rank2 3x / Rank3 5x",
     "C": "40% <= gain_24h < 60%, Rank2 only, 3 <= volume_24h_ratio_7d < 5.5, 2x"
@@ -39,7 +42,7 @@
     }
   },
   "runtime_context_json": {
-    "env": "TOP3_REGIME_CONTEXT_PATH",
+    "env": "RANKPULSE_REGIME_CONTEXT_PATH",
     "example": {
       "signal_time_ms": 1783296000000,
       "state": "RED",
@@ -47,6 +50,6 @@
       "recovery_streak": 1,
       "model": "FR_avg_return24_l3_gt_0_fr3_yr1"
     },
-    "fallback": "If the env var is empty, file is missing, or signal_time_ms does not match the current signal window, runtime falls back to base GREEN/main-strategy leverage."
+    "fallback": "If the env var is empty, file is missing, or signal_time_ms does not match the current signal window, runtime falls back to base GREEN/main-strategy leverage. Rank1 tuned cells are fixed leverage and are not adjusted by FR3/YR1."
   }
 }

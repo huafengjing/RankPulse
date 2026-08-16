@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
-from src.research.top3_regime_context_provider import (
+from src.research.rankpulse_regime_context_provider import (
     AutoGeneratingRegimeContextProvider,
     JsonRegimeContextProvider,
     regime_context_provider_from_path,
 )
-from src.research.top3_regime_engine import (
+from src.research.rankpulse_regime_engine import (
     RegimeEngineConfig,
     RegimeOpportunity,
     build_regime_timeline,
     write_context_atomic,
 )
-from src.research.top3_regime_generator import compare_with_reference, full_timeline, generate_context
+from src.research.rankpulse_regime_generator import compare_with_reference, full_timeline, generate_context
 
 
 JULY_6_UTC_MS = 1783296000000
@@ -153,6 +155,28 @@ def test_auto_generating_provider_writes_then_validates_context() -> None:
 
 def test_context_provider_empty_path_keeps_overlay_disabled() -> None:
     assert regime_context_provider_from_path("") is None
+
+
+def test_runtime_context_provider_import_does_not_require_numpy() -> None:
+    code = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "def guarded_import(name, *args, **kwargs):\n"
+        "    if name == 'numpy' or name.startswith('numpy.'):\n"
+        "        raise ModuleNotFoundError('No module named numpy')\n"
+        "    return real_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = guarded_import\n"
+        "import src.research.rankpulse_regime_context_provider\n"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_context_atomic_write_produces_complete_json() -> None:

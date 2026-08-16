@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.research.top3_strategy_rules import DAY_MS, is_duplicate_position
+from src.research.rankpulse_strategy_rules import DAY_MS, is_duplicate_position
 
 
 def test_same_symbol_open_position_is_not_reopened() -> None:
