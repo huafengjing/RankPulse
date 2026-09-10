@@ -1,0 +1,73 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RankPulse Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark">RP</div>
+      <div>
+        <h1>RankPulse</h1>
+        <p>Strategy cockpit</p>
+      </div>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="overview">总览</button>
+      <button class="nav-btn" data-view="trades">每单明细</button>
+      <button class="nav-btn" data-view="signals">信号明细</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div>最后更新</div>
+      <strong id="generatedAt">-</strong>
+      <button id="reloadBtn" class="reload">刷新</button>
+    </div>
+  </aside>
+
+  <main class="app">
+    <section id="overview" class="view active">
+      <header class="page-head">
+        <div>
+          <h2>总览</h2>
+          <p id="overviewSub">读取本地 dashboard 数据中...</p>
+        </div>
+        <div id="healthBadge" class="badge neutral">UNKNOWN</div>
+      </header>
+      <div class="metric-grid" id="metricGrid"></div>
+      <section class="panel">
+        <div class="panel-head">
+          <h3>当前持仓</h3>
+          <span id="positionCount" class="muted"></span>
+        </div>
+        <div class="table-wrap"><table id="positionsTable"></table></div>
+      </section>
+    </section>
+
+    <section id="trades" class="view">
+      <header class="page-head compact"><div><h2>每单明细</h2><p>实际评估仓位，不含 skipped 候选。</p></div></header>
+      <div class="filters">
+        <input id="tradeSearch" placeholder="搜索 symbol / 退出原因" />
+        <select id="tradeRank"><option value="">全部 Rank</option><option value="1">Rank1</option><option value="2">Rank2</option><option value="3">Rank3</option></select>
+        <select id="tradeStatus"><option value="">全部状态</option><option value="completed">已关闭</option><option value="open_mark_to_market">未平仓MTM</option></select>
+        <select id="tradeLiq"><option value="">强平不限</option><option value="true">只看强平</option><option value="false">排除强平</option></select>
+      </div>
+      <div class="table-wrap panel-table"><table id="tradesTable"></table></div>
+    </section>
+
+    <section id="signals" class="view">
+      <header class="page-head compact"><div><h2>信号明细</h2><p>包含交易端事件和回测候选/跳过原因。</p></div></header>
+      <div class="filters">
+        <input id="signalSearch" placeholder="搜索 symbol / 过滤原因 / 错误" />
+        <select id="signalRank"><option value="">全部 Rank</option><option value="1">Rank1</option><option value="2">Rank2</option><option value="3">Rank3</option></select>
+        <select id="signalPass"><option value="">通过不限</option><option value="true">PASS</option><option value="false">SKIP / FAILED</option></select>
+        <select id="signalSource"><option value="">全部来源</option></select>
+      </div>
+      <div class="table-wrap panel-table"><table id="signalsTable"></table></div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

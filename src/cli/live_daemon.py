@@ -7,6 +7,7 @@ from src.cli.testnet_daemon import (
     _daemon_cycle_lock,
     _has_meaningful_activity,
     _run_runner_cycle,
+    _daemon_interval_minutes,
     _sleep_until_next_signal,
     reconcile_startup_state,
     render_cycle_summary,
@@ -32,7 +33,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = AppSettings.from_env_file()
-    interval_minutes = args.interval_minutes or settings.signal_test_interval_minutes
+    interval_minutes = _daemon_interval_minutes(settings, args.interval_minutes)
     with _daemon_cycle_lock(TradingMode.LIVE, settings):
         print(_load_startup_status(settings), flush=True)
 
@@ -146,3 +147,5 @@ def run_one_cycle(now_ms: int | None = None) -> dict[str, object]:
 
 if __name__ == "__main__":
     main()
+
+

@@ -36,6 +36,7 @@ def test_settings_defaults_are_safe() -> None:
     assert settings.max_open_positions == 10
     assert settings.enable_12h_weak_exit is True
     assert settings.enable_4h_extreme_weak_exit is True
+    assert settings.enable_rank1_24h_weak_exit is True
     assert settings.top3_regime_enabled is False
     assert settings.top3_regime_context_auto_generate is True
     assert settings.rank1_bootstrap_enabled is True
@@ -67,6 +68,7 @@ def test_test_fast_settings_from_env() -> None:
             "SIGNAL_TEST_INTERVAL_MINUTES": "5",
             "TEST_EXTREME_WEAK_EXIT_AFTER_MINUTES": "5",
             "TEST_WEAK_EXIT_AFTER_MINUTES": "15",
+            "TEST_RANK1_24H_WEAK_EXIT_AFTER_MINUTES": "30",
             "TEST_PLANNED_EXIT_AFTER_MINUTES": "60",
             "TELEGRAM_BOT_TOKEN": "123:token",
             "TELEGRAM_CHAT_ID": "456",
@@ -79,6 +81,7 @@ def test_test_fast_settings_from_env() -> None:
     assert settings.signal_mode == SignalMode.TEST_FAST
     assert settings.position_margin_usdt == 10
     assert settings.max_open_positions == 2
+    assert settings.test_rank1_24h_weak_exit_after_minutes == 30
     assert settings.telegram_bot_token == "123:token"
     assert settings.telegram_chat_id == "456"
     assert settings.top3_regime_enabled is True
@@ -192,15 +195,15 @@ def test_production_information_window_is_beijing_23_only() -> None:
     assert information_window_time_ms(bj_ms(23, 5), production) is None
 
 
-def test_production_market_preflight_runs_30_minutes_before_observation_and_entry() -> None:
+def test_production_market_preflight_runs_one_hour_before_entry_at_top_of_hour() -> None:
     production = AppSettings(signal_mode=SignalMode.PRODUCTION)
 
-    assert market_preflight_window_time_ms(bj_ms(22, 30), production) == bj_ms(22, 30)
-    assert market_preflight_window_time_ms(bj_ms(23, 30), production) == bj_ms(23, 30)
-    assert market_preflight_window_time_ms(bj_ms(7, 30), production) == bj_ms(7, 30)
-    assert market_preflight_window_time_ms(bj_ms(23, 0), production) is None
+    assert market_preflight_window_time_ms(bj_ms(23, 0), production) == bj_ms(23, 0)
+    assert market_preflight_window_time_ms(bj_ms(7, 0), production) == bj_ms(7, 0)
+    assert market_preflight_window_time_ms(bj_ms(22, 30), production) is None
+    assert market_preflight_window_time_ms(bj_ms(23, 30), production) is None
     assert market_preflight_window_time_ms(bj_ms(8, 0), production) is None
-    assert market_preflight_window_time_ms(bj_ms(7, 31), production) is None
+    assert market_preflight_window_time_ms(bj_ms(7, 1), production) is None
 
 
 def test_state_paths_are_isolated_by_trading_and_signal_mode() -> None:
@@ -213,3 +216,4 @@ def test_state_paths_are_isolated_by_trading_and_signal_mode() -> None:
     assert str(live.state_path).endswith("data\\live\\production\\state.json") or str(live.state_path).endswith("data/live/production/state.json")
     assert paper.state_path != testnet.state_path
     assert live.state_path != testnet.state_path
+

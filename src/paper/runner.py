@@ -9,7 +9,9 @@ from src.paper.signals import generate_binance_ticker_rank_signals
 from src.paper.store import PaperEventLogger, PaperStateStore
 from src.paper.trading import (
     PaperExtremeWeakExitCheck,
+    PaperMfeAgingPartialTpCheck,
     PaperPosition,
+    PaperRank1Weak24hExitCheck,
     PaperTradeExit,
     PaperTradingEngine,
     PaperWeakExitCheck,
@@ -141,23 +143,53 @@ class PaperTradingRunner:
 
             current_position = self.engine.open_position(position.symbol)
             if (
-                current_position is None
-                or current_position.weak_exit_checked
-                or now_ms < current_position.entry_time_ms + 12 * HOUR_MS
+                current_position is not None
+                and not current_position.weak_exit_checked
+                and now_ms >= current_position.entry_time_ms + 12 * HOUR_MS
             ):
+                klines = self.market_client.one_hour_klines(current_position.symbol, limit=13, end_time_ms=now_ms)
+                check = _weak_exit_check_from_klines(current_position, klines, now_ms, latest_prices)
+                if check is not None:
+                    trade_exit = self.engine.on_weak_exit_check(check)
+                    if trade_exit is None:
+                        self.logger.log("weak_12h_checked_no_exit", {"symbol": position.symbol, "check_time_ms": now_ms})
+                    else:
+                        exits.append(trade_exit)
+                        self.logger.log("weak_12h_exit", asdict(trade_exit))
+                        continue
+
+            latest_position = self.engine.open_position(position.symbol)
+            if latest_position is None:
                 continue
 
-            klines = self.market_client.one_hour_klines(current_position.symbol, limit=13, end_time_ms=now_ms)
-            check = _weak_exit_check_from_klines(current_position, klines, now_ms, latest_prices)
-            if check is None:
-                continue
+            if (
+                latest_position.rank in {1, 2}
+                and not latest_position.rank1_weak_24h_exit_checked
+                and now_ms >= latest_position.rank1_weak_24h_exit_check_time_ms
+            ):
+                klines = self.market_client.one_hour_klines(latest_position.symbol, limit=25, end_time_ms=now_ms)
+                check_24h = _rank1_weak_24h_exit_check_from_klines(latest_position, klines, now_ms, latest_prices)
+                if check_24h is None:
+                    continue
 
-            trade_exit = self.engine.on_weak_exit_check(check)
-            if trade_exit is None:
-                self.logger.log("weak_12h_checked_no_exit", {"symbol": position.symbol, "check_time_ms": now_ms})
+                trade_exit = self.engine.on_rank1_weak_24h_exit_check(check_24h)
+                if trade_exit is None:
+                    self.logger.log("weak_24h_rank1_rank2_checked_no_exit", {"symbol": position.symbol, "check_time_ms": now_ms})
+                else:
+                    exits.append(trade_exit)
+                    self.logger.log("weak_24h_rank1_rank2_exit", asdict(trade_exit))
+                    continue
+
+            latest_position = self.engine.open_position(position.symbol)
+            if latest_position is None or latest_position.mfe_aging_partial_tp_done:
                 continue
-            exits.append(trade_exit)
-            self.logger.log("weak_12h_exit", asdict(trade_exit))
+            klines = self.market_client.one_hour_klines(latest_position.symbol, limit=200, end_time_ms=now_ms)
+            partial_check = _mfe_aging_partial_tp_check_from_klines(latest_position, klines, now_ms, latest_prices)
+            if partial_check is None:
+                continue
+            partial_position = self.engine.on_mfe_aging_partial_tp_check(partial_check)
+            if partial_position is not None:
+                self.logger.log("mfe_aging_partial_tp_done", asdict(partial_position))
 
         self.store.save(self.engine)
         return exits
@@ -222,4 +254,74 @@ def _weak_exit_check_from_klines(
         mfe_12h=mfe_12h,
         close_return_12h=close_return_12h,
         mae_12h=mae_12h,
+    )
+
+
+def _rank1_weak_24h_exit_check_from_klines(
+    position: PaperPosition,
+    klines: list[Kline],
+    now_ms: int,
+    latest_prices: dict[str, float],
+) -> PaperRank1Weak24hExitCheck | None:
+    completed = [
+        kline
+        for kline in klines
+        if position.entry_time_ms <= kline.open_time_ms
+        and kline.close_time_ms < now_ms
+    ]
+    if len(completed) < 24:
+        return None
+
+    first_24h = sorted(completed, key=lambda item: item.open_time_ms)[:24]
+    entry_price = position.entry_price
+    mfe_24h = max(kline.high for kline in first_24h) / entry_price - 1
+    mae_24h = min(kline.low for kline in first_24h) / entry_price - 1
+    close_return_24h = first_24h[-1].close / entry_price - 1
+    fill_price = latest_prices.get(position.symbol, first_24h[-1].close)
+
+    return PaperRank1Weak24hExitCheck(
+        symbol=position.symbol,
+        check_time_ms=now_ms,
+        fill_price=fill_price,
+        mfe_24h=mfe_24h,
+        close_return_24h=close_return_24h,
+        mae_24h=mae_24h,
+    )
+
+
+def _mfe_aging_partial_tp_check_from_klines(
+    position: PaperPosition,
+    klines: list[Kline],
+    now_ms: int,
+    latest_prices: dict[str, float],
+) -> PaperMfeAgingPartialTpCheck | None:
+    completed = [
+        kline
+        for kline in klines
+        if position.entry_time_ms <= kline.open_time_ms
+        and kline.close_time_ms < now_ms
+    ]
+    if not completed:
+        return None
+
+    running_mfe_u = position.mfe_aging_running_mfe_u
+    last_high_time_ms = position.mfe_aging_last_high_time_ms or position.entry_time_ms
+    for kline in sorted(completed, key=lambda item: item.open_time_ms):
+        current_mfe_u = (
+            (kline.high - position.entry_price)
+            * position.margin_usdt
+            * position.leverage
+            / position.entry_price
+        )
+        if current_mfe_u > running_mfe_u:
+            running_mfe_u = current_mfe_u
+            last_high_time_ms = kline.open_time_ms
+
+    fill_price = latest_prices.get(position.symbol, sorted(completed, key=lambda item: item.open_time_ms)[-1].close)
+    return PaperMfeAgingPartialTpCheck(
+        symbol=position.symbol,
+        check_time_ms=now_ms,
+        fill_price=fill_price,
+        running_mfe_u=running_mfe_u,
+        last_high_time_ms=last_high_time_ms,
     )

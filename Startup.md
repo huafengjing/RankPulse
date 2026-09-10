@@ -2,27 +2,8 @@
 
 ## 1. 实盘启动
 
-先确认 `.env` 至少包含：
 
-```env
-TRADING_MODE=live
-SIGNAL_MODE=production
 
-ENFORCE_SAFETY_LOCK=false
-ALLOW_LIVE_TRADING=true
-LIVE_ORDER_CONFIRMATION=I_UNDERSTAND_THIS_IS_REAL_MONEY
-
-BINANCE_LIVE_API_KEY=你的key
-BINANCE_LIVE_API_SECRET=你的secret
-
-POSITION_MARGIN_USDT=10
-MAX_OPEN_POSITIONS=10
-
-RANKPULSE_REGIME_ENABLED=true
-RANKPULSE_REGIME_CONTEXT_AUTO_GENERATE=true
-
-ENABLE_12H_WEAK_EXIT=true
-```
 
 然后按顺序运行：
 
@@ -65,7 +46,27 @@ Bootstrap 虚拟持仓只用于阻断重复开仓和占用最大持仓数量。�
 python -m src.cli.live_status
 ```
 
-## 4. 停止程序
+## 4. 打开可视化页面
+
+在项目根目录启动本地静态服务：
+
+```powershell
+python -m http.server 8000
+```
+
+然后打开：
+
+[http://localhost:8000/dashboard/index.html](http://localhost:8000/dashboard/index.html)
+
+可视化页面读取：
+
+- `output/dashboard/overview.json`
+- `output/dashboard/trades.json`
+- `output/dashboard/signals.json`
+
+如果数据不是最新，先运行对应的交易端或导出脚本刷新 dashboard 数据。
+
+## 5. 停止程序
 
 在运行 `live_daemon` 的终端按：
 
@@ -73,7 +74,7 @@ python -m src.cli.live_status
 Ctrl+C
 ```
 
-## 5. Testnet 启动
+## 6. Testnet 启动
 
 如果跑模拟盘，把 `.env` 改成：
 
@@ -93,7 +94,7 @@ python -m src.cli.testnet_once
 python -m src.cli.testnet_daemon
 ```
 
-## 6. 常见问题
+## 7. 常见问题
 
 如果出现：
 

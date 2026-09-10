@@ -20,8 +20,10 @@ from src.research.rankpulse_strategy_rules import (
     Top3Signal,
     leverage_for_signal,
     planned_exit_time_ms,
+    rank1_weak_exit_time_ms,
     should_exit_early_12h,
     should_exit_extreme_weak_4h,
+    should_exit_rank1_weak_24h,
     signal_rejection_reason,
     volume_24h_ratio_7d,
 )
@@ -294,6 +296,7 @@ class BootstrapManager:
             planned_exit_time_ms=planned_exit,
             weak_exit_check_time_ms=signal.signal_time_ms + 12 * 60 * 60 * 1000,
             extreme_weak_exit_check_time_ms=signal.signal_time_ms + 4 * 60 * 60 * 1000,
+            rank1_weak_24h_exit_check_time_ms=rank1_weak_exit_time_ms(signal.signal_time_ms),
             gain_24h=signal.gain_24h,
             volume_24h_ratio_7d=signal.volume_24h_ratio_7d,
         )
@@ -353,6 +356,22 @@ class BootstrapManager:
                     return "bootstrap_weak_12h"
                 self.state_store.mark_weak_exit_checked(position.symbol)
 
+        state_position = self.state_store.load().bootstrap_virtual_position(position.symbol)
+        if (
+            state_position is not None
+            and self.settings.enable_rank1_24h_weak_exit
+            and state_position.rank in {1, 2}
+            and not state_position.rank1_weak_24h_exit_checked
+            and state_position.rank1_weak_24h_exit_check_time_ms is not None
+            and now_ms >= state_position.rank1_weak_24h_exit_check_time_ms
+        ):
+            metrics = self._exit_metrics(state_position, interval="1h", limit=24, now_ms=now_ms, min_required=24)
+            if metrics is not None:
+                mfe, mae, close_return = metrics
+                if should_exit_rank1_weak_24h(state_position.rank, mfe, close_return, enabled=True):
+                    return "bootstrap_weak_24h_rank1_rank2"
+                self.state_store.mark_rank1_weak_24h_exit_checked(position.symbol)
+
         latest_position = self.state_store.load().bootstrap_virtual_position(position.symbol)
         if include_planned and latest_position is not None and now_ms >= latest_position.planned_exit_time_ms:
             return "bootstrap_planned"
@@ -364,6 +383,7 @@ class BootstrapManager:
         interval: str,
         limit: int,
         now_ms: int,
+        min_required: int | None = None,
     ) -> tuple[float, float, float] | None:
         klines = self.market_client.klines(
             position.symbol,
@@ -376,8 +396,8 @@ class BootstrapManager:
             for kline in klines
             if position.entry_time_ms <= kline.open_time_ms and kline.close_time_ms < now_ms
         ]
-        min_required = max(1, int(limit * 0.8))
-        if len(completed) < min_required:
+        required = min_required if min_required is not None else max(1, int(limit * 0.8))
+        if len(completed) < required:
             return None
         sorted_completed = sorted(completed, key=lambda item: item.open_time_ms)
         mfe = max(kline.high for kline in sorted_completed) / position.entry_price - 1

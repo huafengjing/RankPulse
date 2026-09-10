@@ -46,6 +46,12 @@ from scripts.run_current_main_strategy_2026_jan_jun import (
     leverage_for_signal,
     summarize,
 )
+from src.research.rankpulse_strategy_rules import (
+    MFE_AGING_PARTIAL_TP_ACTIVATION_U,
+    MFE_AGING_PARTIAL_TP_RATIO,
+    should_exit_rank1_weak_24h,
+    should_trigger_mfe_aging_partial_tp,
+)
 
 
 OUT_DIR = OUT / os.environ.get("REGIME_ADAPTIVE_OUT_DIR", "regime_adaptive_leverage")
@@ -58,6 +64,7 @@ MIN_WARMUP_DAYS = 30
 MIN_MATURE_OBS = 420
 MIN_PRIOR_INDICATOR_POINTS = 20
 LIQUIDATION_THRESHOLDS_PCT = {1: -100.0, 2: -50.0, 3: -33.0, 4: -25.0, 5: -20.0}
+MFE_AGING_PARTIAL_TP_REASON = "mfe_aging_partial_tp_400u_40pct"
 
 
 BUCKET_LABELS = {
@@ -301,6 +308,9 @@ def simulate_trade_with_leverage(signal: pd.Series, kline_map: dict[str, pd.Data
     first_12h = path_slice(h1, entry_time, min(entry_time + 12 * HOUR_MS - HOUR_MS, current_time))
     mfe12, mae12, _, _ = mfe_mae(first_12h, entry_price) if len(first_12h) >= 1 else (np.nan, np.nan, np.nan, np.nan)
     close_return_12h = (float(first_12h.iloc[-1]["close"]) / entry_price - 1.0) * 100.0 if len(first_12h) >= 1 else np.nan
+    first_24h = path_slice(h1, entry_time, min(entry_time + 24 * HOUR_MS - HOUR_MS, current_time))
+    mfe24, mae24, _, _ = mfe_mae(first_24h, entry_price) if len(first_24h) >= 1 else (np.nan, np.nan, np.nan, np.nan)
+    close_return_24h = (float(first_24h.iloc[-1]["close"]) / entry_price - 1.0) * 100.0 if len(first_24h) >= 1 else np.nan
 
     if len(first_4h) >= 4 and mfe4 < 2.0 and mae4 < -8.0:
         exit_target = entry_time + 4 * HOUR_MS
@@ -311,6 +321,15 @@ def simulate_trade_with_leverage(signal: pd.Series, kline_map: dict[str, pd.Data
         exit_target = entry_time + 12 * HOUR_MS
         exit_time, exit_price, fallback = get_open_at_or_latest(h1, exit_target, entry_time)
         exit_reason = fallback or EARLY_REASON
+        status = "completed"
+    elif len(first_24h) >= 24 and should_exit_rank1_weak_24h(
+        rank=int(signal["rank"]),
+        mfe_24h=mfe24 / 100.0,
+        close_return_24h=close_return_24h / 100.0,
+    ):
+        exit_target = entry_time + 24 * HOUR_MS
+        exit_time, exit_price, fallback = get_open_at_or_latest(h1, exit_target, entry_time)
+        exit_reason = fallback or "weak_24h_rank1_rank2"
         status = "completed"
     else:
         exit_target = entry_time + HOLD_DAYS * DAY_MS
@@ -328,14 +347,35 @@ def simulate_trade_with_leverage(signal: pd.Series, kline_map: dict[str, pd.Data
 
     trade_path = path_slice(h1, entry_time, exit_time)
     mfe, mae, max_price, min_price = mfe_mae(trade_path, entry_price)
-    liquidated = bool(mae <= LIQUIDATION_THRESHOLDS_PCT[leverage])
-    if liquidated:
+    liquidation_time = _liquidation_time_before_or_at(h1, entry_time, exit_time, entry_price, leverage)
+    liquidated = liquidation_time is not None
+    partial = _mfe_aging_partial_tp_fields()
+    baseline_pnl, baseline_net_return = calc_leveraged_pnl(entry_price, exit_price, leverage)
+    partial = _mfe_aging_partial_tp_for_path(
+        h1=h1,
+        entry_time=entry_time,
+        exit_time=exit_time,
+        entry_price=entry_price,
+        exit_price=float(exit_price),
+        leverage=leverage,
+        full_final_pnl=float(baseline_pnl),
+        liquidation_time_ms=liquidation_time,
+    )
+    if partial["partial_tp_triggered"]:
+        pnl = float(partial["partial_tp_realized_pnl_u"]) + float(partial["partial_tp_remaining_pnl_u"])
+        net_return = pnl / BUY_NOTIONAL_U * 100.0
+        liquidated = bool(partial["liquidated_after_partial_tp"])
+        if liquidated:
+            exit_reason = "liquidation_after_mfe_aging_partial_tp"
+            status = "completed"
+    elif liquidated:
         pnl = -BUY_NOTIONAL_U
         net_return = -100.0
         exit_reason = "liquidation"
         status = "completed"
     else:
-        pnl, net_return = calc_leveraged_pnl(entry_price, exit_price, leverage)
+        pnl = baseline_pnl
+        net_return = baseline_net_return
     underlying_return = float(exit_price) / entry_price - 1.0
     return base | {
         "status": status,
@@ -357,10 +397,116 @@ def simulate_trade_with_leverage(signal: pd.Series, kline_map: dict[str, pd.Data
         "mfe_12h_pct": mfe12,
         "mae_12h_pct": mae12,
         "close_return_12h_pct": close_return_12h,
+        "mfe_24h_pct": mfe24,
+        "mae_24h_pct": mae24,
+        "close_return_24h_pct": close_return_24h,
         "max_price_during_trade": max_price,
         "min_price_during_trade": min_price,
         "liquidated": liquidated,
         "is_win": pnl > 0,
+    } | partial
+
+
+def _mfe_aging_partial_tp_for_path(
+    h1: pd.DataFrame,
+    entry_time: int,
+    exit_time: int,
+    entry_price: float,
+    exit_price: float,
+    leverage: int,
+    full_final_pnl: float,
+    liquidation_time_ms: int | None,
+) -> dict[str, Any]:
+    path = h1[(h1["open_time"] >= entry_time) & (h1["open_time"] <= exit_time)].sort_values("open_time")
+    running_mfe_u = -np.inf
+    last_mfe_high_time_ms = entry_time
+    last_mfe_high_price = entry_price
+
+    for row in path.itertuples(index=False):
+        open_time = int(row.open_time)
+        high = float(row.high)
+        current_mfe_u = calc_leveraged_pnl(entry_price, high, leverage)[0]
+        if current_mfe_u > running_mfe_u:
+            running_mfe_u = current_mfe_u
+            last_mfe_high_time_ms = open_time
+            last_mfe_high_price = high
+            continue
+
+        if should_trigger_mfe_aging_partial_tp(
+            running_mfe_u=float(running_mfe_u),
+            last_mfe_high_time_ms=last_mfe_high_time_ms,
+            now_ms=open_time,
+        ):
+            if liquidation_time_ms is not None and liquidation_time_ms <= open_time:
+                return _mfe_aging_partial_tp_fields()
+            partial_price = float(row.close)
+            tp_ratio = MFE_AGING_PARTIAL_TP_RATIO
+            partial_pnl = calc_leveraged_pnl(entry_price, partial_price, leverage)[0] * tp_ratio
+            liquidated_after_partial = liquidation_time_ms is not None and liquidation_time_ms > open_time
+            remaining_pnl = (
+                -BUY_NOTIONAL_U * (1.0 - tp_ratio)
+                if liquidated_after_partial
+                else full_final_pnl * (1.0 - tp_ratio)
+            )
+            return {
+                "partial_tp_triggered": True,
+                "partial_tp_reason": MFE_AGING_PARTIAL_TP_REASON,
+                "partial_tp_ratio": tp_ratio,
+                "partial_tp_realized_pnl_u": float(partial_pnl),
+                "partial_tp_remaining_pnl_u": float(remaining_pnl),
+                "activation_mfe_u": MFE_AGING_PARTIAL_TP_ACTIVATION_U,
+                "partial_tp_time_ms": open_time,
+                "partial_tp_time_utc": ms_to_utc(open_time).strftime("%Y-%m-%d %H:%M:%S"),
+                "partial_tp_time_bj": ms_to_bj_string(open_time),
+                "partial_tp_price": partial_price,
+                "trigger_running_mfe_u": float(running_mfe_u),
+                "trigger_holding_days": (open_time - entry_time) / DAY_MS,
+                "last_mfe_high_time_ms": last_mfe_high_time_ms,
+                "last_mfe_high_time_utc": ms_to_utc(last_mfe_high_time_ms).strftime("%Y-%m-%d %H:%M:%S"),
+                "last_mfe_high_time_bj": ms_to_bj_string(last_mfe_high_time_ms),
+                "last_mfe_high_price": float(last_mfe_high_price),
+                "incremental_pnl_u": float(partial_pnl + remaining_pnl - full_final_pnl),
+                "liquidated_after_partial_tp": liquidated_after_partial,
+            }
+    return _mfe_aging_partial_tp_fields()
+
+
+def _liquidation_time_before_or_at(
+    h1: pd.DataFrame,
+    entry_time: int,
+    exit_time: int,
+    entry_price: float,
+    leverage: int,
+) -> int | None:
+    threshold_pct = LIQUIDATION_THRESHOLDS_PCT[leverage] / 100.0
+    liquidation_price = entry_price * (1.0 + threshold_pct)
+    path = h1[(h1["open_time"] >= entry_time) & (h1["open_time"] <= exit_time)].sort_values("open_time")
+    hit = path[pd.to_numeric(path["low"], errors="coerce") <= liquidation_price]
+    if hit.empty:
+        return None
+    return int(hit.iloc[0]["open_time"])
+
+
+def _mfe_aging_partial_tp_fields() -> dict[str, Any]:
+    return {
+        "partial_tp_triggered": False,
+        "partial_tp_reason": "",
+        "partial_tp_ratio": MFE_AGING_PARTIAL_TP_RATIO,
+        "partial_tp_realized_pnl_u": 0.0,
+        "partial_tp_remaining_pnl_u": np.nan,
+        "activation_mfe_u": MFE_AGING_PARTIAL_TP_ACTIVATION_U,
+        "partial_tp_time_ms": np.nan,
+        "partial_tp_time_utc": "",
+        "partial_tp_time_bj": "",
+        "partial_tp_price": np.nan,
+        "trigger_running_mfe_u": np.nan,
+        "trigger_holding_days": np.nan,
+        "last_mfe_high_time_ms": np.nan,
+        "last_mfe_high_time_utc": "",
+        "last_mfe_high_time_bj": "",
+        "last_mfe_high_price": np.nan,
+        "incremental_pnl_u": 0.0,
+        "liquidated_after_partial_tp": False,
     }
 
 

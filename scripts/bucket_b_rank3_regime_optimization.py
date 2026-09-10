@@ -48,7 +48,7 @@ from scripts.run_current_main_strategy_2026_jan_jun import (
 
 
 OUT_DIR = OUT / "bucket_b_rank3_regime_optimization"
-EXCLUDE_SYMBOLS = {"BTWUSDT"}
+EXCLUDE_SYMBOLS: set[str] = set()
 LIQ_THRESHOLDS = {3: -33.0, 5: -20.0}
 WARMUP_DAYS = 30
 MIN_PRIOR_VALUES = 10
@@ -159,7 +159,6 @@ def opportunity_sets(raw_signals: pd.DataFrame, kline_map: dict[str, pd.DataFram
     base = raw_signals[
         raw_signals["snapshot_hour_bj"].isin(SNAPSHOT_HOURS_BJ)
         & raw_signals["rank"].isin([2, 3])
-        & raw_signals["symbol"].astype(str).ne("RAVEUSDT")
     ].copy()
     base = add_entry_factors(base, kline_map)
     b = base[
@@ -571,7 +570,7 @@ def write_frozen_baseline(common_end: int) -> None:
         "# Frozen Baseline",
         "",
         "- Scope: original/VELVET-aligned universe.",
-        "- Ranking universe excluded symbols: BTWUSDT.",
+        "- Ranking universe excluded symbols: none.",
         "- VELVETUSDT retained.",
         "- Observation: Beijing 00:00 and 08:00.",
         "- Buckets A/C unchanged; this research only changes Bucket B Rank2/Rank3 leverage or skip.",
@@ -723,7 +722,7 @@ def main() -> None:
         "",
         "## Scope",
         "",
-        "Original/VELVET-aligned universe; `BTWUSDT` excluded from the ranking universe; main strategy rules are frozen. Only Bucket B Rank2/Rank3 leverage or skip is changed.",
+        "Current full cached universe; no BTWUSDT exclusion; main strategy rules are frozen. Only Bucket B Rank2/Rank3 leverage or skip is changed.",
         "",
         "## Baseline",
         "",

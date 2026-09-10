@@ -9,7 +9,7 @@ SAMPLE_SIGNAL_TABLE = """SYMBOL  | RANK | PRICE |  GAIN |  V/R | STATUS
 AGTUSDT |    2 |  0.12 | 94.5% | 6.20 | SKIP
 SYNUSDT |    3 |  0.45 | 66.1% | 2.39 | SKIP
 
-DETAILS
+说明
 AGTUSDT: 超过上限，不交易
 SYNUSDT: 60-80% 区间不交易"""
 
@@ -31,3 +31,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

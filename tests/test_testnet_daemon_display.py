@@ -6,6 +6,7 @@ from src.config.modes import SignalMode, TradingMode
 from src.config.settings import AppSettings
 from src.cli.testnet_daemon import (
     _daemon_cycle_lock,
+    _daemon_interval_minutes,
     _run_runner_cycle,
     _has_meaningful_activity,
     reconcile_startup_state,
@@ -36,7 +37,7 @@ def test_startup_status_shows_no_positions_and_next_production_signal() -> None:
         now_ms=bj_ms(18, 9, 30),
     )
 
-    assert "Rank2/Rank3 的捕捉系统已启动" in output
+    assert "涨幅榜 Top3 的捕捉系统已启动" in output
     assert "当前持仓列表" in output
     assert "暂无持仓" in output
     assert "下次信号时间: 2026-06-19 00:00:00 北京时间" in output
@@ -55,7 +56,7 @@ def test_startup_status_can_show_position_sync_warning_without_crashing() -> Non
     )
 
     assert "持仓同步警告: Testnet 时间同步失败" in output
-    assert "Rank2/Rank3 的捕捉系统已启动" in output
+    assert "涨幅榜 Top3 的捕捉系统已启动" in output
 
 
 def test_startup_status_shows_position_returns() -> None:
@@ -93,6 +94,16 @@ def test_startup_status_shows_position_returns() -> None:
     assert "+50.00%" in output
     assert "下次信号时间: 2026-06-18 08:00:00 北京时间" in output
 
+
+def test_production_daemon_defaults_to_hourly_interval() -> None:
+    settings = AppSettings(
+        trading_mode=TradingMode.LIVE,
+        signal_mode=SignalMode.PRODUCTION,
+        signal_test_interval_minutes=5,
+    )
+
+    assert _daemon_interval_minutes(settings) == 60
+    assert _daemon_interval_minutes(settings, cli_interval_minutes=15) == 15
 
 def test_empty_daemon_cycle_is_not_meaningful_activity() -> None:
     assert _has_meaningful_activity(
@@ -246,6 +257,42 @@ def test_cycle_summary_renders_http_418_as_user_friendly_chinese() -> None:
     assert "- information_signal: RuntimeError" not in output
 
 
+def test_production_off_signal_hour_skips_bootstrap_signal_and_position_sync() -> None:
+    runner = CountingCycleRunner(
+        AppSettings(trading_mode=TradingMode.LIVE, signal_mode=SignalMode.PRODUCTION)
+    )
+    state_store = FakeStateStore()
+
+    summary = _run_runner_cycle(
+        runner=runner,
+        state_store=state_store,
+        current_ms=bj_ms(18, 17),
+    )
+
+    assert runner.bootstrap_calls == 0
+    assert runner.signal_calls == 0
+    assert runner.sync_calls == 0
+    assert runner.exit_calls == 1
+    assert summary["open_positions_source"] == "local"
+
+
+def test_production_signal_hour_runs_bootstrap_signal_and_position_sync() -> None:
+    runner = CountingCycleRunner(
+        AppSettings(trading_mode=TradingMode.LIVE, signal_mode=SignalMode.PRODUCTION)
+    )
+    state_store = FakeStateStore()
+
+    summary = _run_runner_cycle(
+        runner=runner,
+        state_store=state_store,
+        current_ms=bj_ms(18, 8),
+    )
+
+    assert runner.bootstrap_calls == 1
+    assert runner.signal_calls == 1
+    assert runner.sync_calls == 1
+    assert summary["open_positions_source"] == "binance"
+
 def test_exit_failure_does_not_block_signal_cycle() -> None:
     runner = FailingExitRunner()
     state_store = FakeStateStore()
@@ -300,6 +347,36 @@ def test_startup_reconciliation_removes_local_position_missing_on_testnet() -> N
     assert state_store.load().open_position("GUAUSDT") is None
 
 
+class CountingCycleRunner:
+    def __init__(self, settings: AppSettings) -> None:
+        self.settings = settings
+        self.bootstrap_calls = 0
+        self.signal_calls = 0
+        self.sync_calls = 0
+        self.exit_calls = 0
+
+    def ensure_bootstrap(self, now_ms: int):
+        self.bootstrap_calls += 1
+        return []
+
+    def run_hourly_exit_cycle(self, now_ms: int):
+        self.exit_calls += 1
+        return [], []
+
+    def run_signal_cycle(self, now_ms: int):
+        self.signal_calls += 1
+        return []
+
+    def run_information_cycle(self, now_ms: int):
+        return False
+
+    def run_market_preflight_cycle(self, now_ms: int):
+        return False
+
+    def sync_open_positions_from_exchange(self):
+        self.sync_calls += 1
+        return []
+
 class FailingExitRunner:
     def __init__(self) -> None:
         self.signal_called = False
@@ -335,3 +412,5 @@ def _position(symbol: str) -> TestnetPosition:
         extreme_weak_exit_check_time_ms=bj_ms(18, 4),
         weak_exit_check_time_ms=bj_ms(18, 12),
     )
+
+

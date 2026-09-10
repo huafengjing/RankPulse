@@ -29,7 +29,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = AppSettings.from_env_file()
-    interval_minutes = args.interval_minutes or settings.signal_test_interval_minutes
+    interval_minutes = _daemon_interval_minutes(settings, args.interval_minutes)
     with _daemon_cycle_lock(TradingMode.TESTNET, settings):
         print(_load_startup_status(settings), flush=True)
 
@@ -147,7 +147,7 @@ def render_startup_status(
     sync_warning: str | None = None,
 ) -> str:
     lines = [
-        "Rank2/Rank3 的捕捉系统已启动",
+        "涨幅榜 Top3 的捕捉系统已启动",
         "",
         "当前持仓列表",
     ]
@@ -218,6 +218,14 @@ def _has_meaningful_activity(summary: dict[str, object]) -> bool:
     if summary.get("error") or summary.get("errors"):
         return True
     return any(summary.get(key) for key in ("opened", "weak_exits", "planned_exits", "preflight_sent"))
+
+
+def _daemon_interval_minutes(settings: AppSettings, cli_interval_minutes: int | None = None) -> int:
+    if cli_interval_minutes is not None:
+        return cli_interval_minutes
+    if settings.signal_mode.value == "production":
+        return 60
+    return settings.signal_test_interval_minutes
 
 
 def _daemon_cycle_lock(trading_mode: TradingMode, settings: AppSettings) -> FileLock:
@@ -472,13 +480,15 @@ def _run_runner_cycle(
     preflight_sent = False
     information_sent = False
     bootstrap_failed = False
+    should_run_trade_window = _is_trade_signal_window(runner, current_ms)
 
-    try:
-        if hasattr(runner, "ensure_bootstrap"):
-            runner.ensure_bootstrap(current_ms)  # type: ignore[attr-defined]
-    except Exception as exc:
-        errors.append(_phase_error("bootstrap", exc))
-        bootstrap_failed = True
+    if should_run_trade_window:
+        try:
+            if hasattr(runner, "ensure_bootstrap"):
+                runner.ensure_bootstrap(current_ms)  # type: ignore[attr-defined]
+        except Exception as exc:
+            errors.append(_phase_error("bootstrap", exc))
+            bootstrap_failed = True
 
     try:
         preflight_sent = runner.run_market_preflight_cycle(current_ms)  # type: ignore[attr-defined]
@@ -495,14 +505,15 @@ def _run_runner_cycle(
     except Exception as exc:
         errors.append(_phase_error("information_signal", exc))
 
-    if not bootstrap_failed:
+    if should_run_trade_window and not bootstrap_failed:
         try:
             opened = runner.run_signal_cycle(current_ms)  # type: ignore[attr-defined]
         except Exception as exc:
             errors.append(_phase_error("signal", exc))
 
     open_positions_source = "local"
-    if hasattr(runner, "sync_open_positions_from_exchange"):
+    should_sync_positions = should_run_trade_window or bool(opened or weak_exits or planned_exits)
+    if should_sync_positions and hasattr(runner, "sync_open_positions_from_exchange"):
         try:
             open_position_symbols = runner.sync_open_positions_from_exchange()  # type: ignore[attr-defined]
             open_positions_source = "binance"
@@ -532,6 +543,14 @@ def _run_runner_cycle(
     }
 
 
+
+def _is_trade_signal_window(runner: object, current_ms: int) -> bool:
+    settings = getattr(runner, "settings", None)
+    if settings is None:
+        return True
+    from src.config.schedule import signal_window_time_ms
+
+    return signal_window_time_ms(current_ms, settings) is not None
 def _phase_error(phase: str, exc: Exception) -> dict[str, str]:
     return {
         "phase": phase,
@@ -542,3 +561,6 @@ def _phase_error(phase: str, exc: Exception) -> dict[str, str]:
 
 if __name__ == "__main__":
     main()
+
+
+

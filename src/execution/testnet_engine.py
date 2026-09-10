@@ -19,6 +19,7 @@ from src.execution.testnet_state import (
 from src.paper.store import PaperEventLogger
 from src.paper.trading import PaperSignal
 from src.research.rankpulse_strategy_rules import Top3Signal, planned_exit_time_ms
+from src.research.rankpulse_strategy_rules import MFE_AGING_PARTIAL_TP_RATIO
 
 
 class TestnetClientProtocol(Protocol):
@@ -174,6 +175,8 @@ class TestnetExecutionEngine:
             planned_exit_time_ms=planned_exit_ms,
             extreme_weak_exit_check_time_ms=signal.signal_time_ms + exit_after_ms("extreme_weak", self.settings),
             weak_exit_check_time_ms=signal.signal_time_ms + exit_after_ms("weak", self.settings),
+            rank1_weak_24h_exit_check_time_ms=signal.signal_time_ms + exit_after_ms("rank1_weak_24h", self.settings),
+            rank=signal.rank,
         )
         self.state_store.save(
             TestnetState(
@@ -278,7 +281,11 @@ class TestnetExecutionEngine:
             leverage=position.leverage,
             entry_order_id=position.order_id,
             exit_order_id=exit_order_id,
-            realized_pnl=round((exit_price - position.entry_price) * exit_qty, 12),
+            realized_pnl=round(
+                position.mfe_aging_partial_tp_realized_pnl
+                + (exit_price - position.entry_price) * exit_qty,
+                12,
+            ),
             exit_reason=reason,
         )
         self.state_store.save(
@@ -302,6 +309,82 @@ class TestnetExecutionEngine:
             },
         )
         return closed
+
+    def partial_close_position(
+        self,
+        symbol: str,
+        exit_time_ms: int,
+        ratio: float = MFE_AGING_PARTIAL_TP_RATIO,
+        reason: str = "mfe_aging_partial_tp_400u_40pct",
+        running_mfe_u: float = 0.0,
+        last_high_time_ms: int | None = None,
+    ) -> TestnetPosition | None:
+        state = self.state_store.load()
+        position = state.open_position(symbol)
+        if position is None or position.mfe_aging_partial_tp_done:
+            return None
+
+        exchange_position = self.client.open_positions().get(symbol)
+        if exchange_position is None or exchange_position.position_amt <= 0:
+            self._log(
+                f"{self.event_prefix}_partial_close_skipped",
+                {
+                    "symbol": symbol,
+                    "reason": "exchange_position_missing_or_not_long",
+                    "local_qty": position.qty,
+                },
+            )
+            return None
+
+        filters = self.filter_provider.filters_for_symbol(symbol)
+        close_qty = exchange_position.position_amt * ratio
+        order = self.client.market_close_long(
+            symbol,
+            format_order_quantity(close_qty, filters),
+        )
+        exit_order_id = int(order.get("orderId", 0))
+        exit_price, exit_qty, confirmation_source = self._confirm_close_fill(
+            symbol=symbol,
+            order_id=exit_order_id,
+            fallback_order=order,
+            fallback_price=position.entry_price,
+            fallback_qty=close_qty,
+        )
+        realized_pnl = round((exit_price - position.entry_price) * exit_qty, 12)
+        remaining_qty = max(position.qty - exit_qty, 0.0)
+        self.state_store.mark_mfe_aging_partial_tp_done(
+            symbol=symbol,
+            qty=remaining_qty,
+            partial_time_ms=exit_time_ms,
+            partial_price=exit_price,
+            partial_realized_pnl=realized_pnl,
+            order_id=exit_order_id,
+            running_mfe_u=running_mfe_u,
+            last_high_time_ms=last_high_time_ms,
+        )
+        updated = self.state_store.load().open_position(symbol)
+        self._log(
+            f"{self.event_prefix}_partial_closed",
+            {
+                "symbol": symbol,
+                "entry_time_ms": position.entry_time_ms,
+                "exit_time_ms": exit_time_ms,
+                "entry_price": position.entry_price,
+                "exit_price": exit_price,
+                "qty": exit_qty,
+                "remaining_qty": remaining_qty,
+                "leverage": position.leverage,
+                "entry_order_id": position.order_id,
+                "exit_order_id": exit_order_id,
+                "realized_pnl": realized_pnl,
+                "exit_reason": reason,
+                "partial_ratio": ratio,
+                "running_mfe_u": running_mfe_u,
+                "last_high_time_ms": last_high_time_ms,
+                "confirmation_source": confirmation_source,
+            },
+        )
+        return updated
 
     def _log(self, event: str, payload: dict[str, object]) -> None:
         self.logger.log(

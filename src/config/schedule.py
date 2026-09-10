@@ -57,9 +57,9 @@ def market_preflight_window_time_ms(
     if settings.signal_mode != SignalMode.PRODUCTION:
         return None
     bj_time = datetime.fromtimestamp(timestamp_ms / 1000, tz=BEIJING_TZ)
-    if bj_time.minute != 30 or bj_time.hour not in {7, 22, 23}:
+    if bj_time.minute != 0 or bj_time.hour not in {7, 23}:
         return None
-    window = bj_time.replace(minute=30, second=0, microsecond=0)
+    window = bj_time.replace(minute=0, second=0, microsecond=0)
     return int(window.timestamp() * 1000)
 
 
@@ -72,8 +72,14 @@ def exit_after_ms(kind: str, settings: AppSettings) -> int:
         if settings.signal_mode == SignalMode.TEST_FAST:
             return settings.test_weak_exit_after_minutes * 60 * 1000
         return 12 * 60 * 60 * 1000
+    if kind == "rank1_weak_24h":
+        if settings.signal_mode == SignalMode.TEST_FAST:
+            return settings.test_rank1_24h_weak_exit_after_minutes * 60 * 1000
+        return 24 * 60 * 60 * 1000
     if kind == "planned":
         if settings.signal_mode == SignalMode.TEST_FAST:
             return settings.test_planned_exit_after_minutes * 60 * 1000
         return 6 * 24 * 60 * 60 * 1000
     raise ValueError(f"Unknown exit kind: {kind}")
+
+

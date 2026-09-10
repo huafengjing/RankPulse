@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.backtest_futures_top2_fixed_time import CACHE_DIR, HOUR_MS
+from scripts.backtest_futures_top2_fixed_time import CACHE_DIR, HOUR_MS, SimpleBinanceFuturesClient, get_futures_symbols
 
 
 BASE_URL = "https://fapi.binance.com/fapi/v1/klines"
@@ -80,18 +80,21 @@ def read_symbol(path: Path) -> pd.DataFrame:
     return frame
 
 
-def update_symbol(symbol: str, target_ms: int) -> dict[str, object]:
+def update_symbol(symbol: str, target_ms: int, new_symbol_start_ms: int | None = None) -> dict[str, object]:
     path = CACHE_DIR / f"{symbol}_1h.csv"
     cached = read_symbol(path)
     if cached.empty:
-        return {"symbol": symbol, "downloaded": 0, "last_ms": None, "error": "empty_cache"}
-    last_ms = int(cached["open_time"].max())
+        if new_symbol_start_ms is None:
+            return {"symbol": symbol, "downloaded": 0, "last_ms": None, "error": "empty_cache"}
+        last_ms = int(new_symbol_start_ms) - HOUR_MS
+    else:
+        last_ms = int(cached["open_time"].max())
     if last_ms >= target_ms:
         return {"symbol": symbol, "downloaded": 0, "last_ms": last_ms, "error": ""}
     start_ms = last_ms + HOUR_MS
     downloaded = fetch_klines(symbol, start_ms, target_ms)
     if not downloaded.empty:
-        combined = pd.concat([cached, downloaded], ignore_index=True)
+        combined = pd.concat([cached, downloaded], ignore_index=True) if not cached.empty else downloaded
         keep = [col for col in KLINE_COLUMNS + ["symbol", "interval", "open_time_utc", "close_time_utc"] if col in combined.columns]
         combined[keep].drop_duplicates(["symbol", "interval", "open_time"]).sort_values("open_time").to_csv(path, index=False)
     return {"symbol": symbol, "downloaded": int(len(downloaded)), "last_ms": target_ms, "error": ""}
@@ -100,14 +103,20 @@ def update_symbol(symbol: str, target_ms: int) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, help="UTC target hour, e.g. 2026-07-27 15:00:00")
+    parser.add_argument("--refresh-universe", action="store_true", help="Include current Binance USDT perpetual symbols even when no local CSV exists yet.")
+    parser.add_argument("--new-symbol-start", default="2026-01-01 00:00:00", help="UTC start hour for symbols missing local cache.")
     parser.add_argument("--workers", type=int, default=16)
     args = parser.parse_args()
 
     target_ms = int(pd.Timestamp(args.target, tz="UTC").timestamp() * 1000)
+    new_symbol_start_ms = int(pd.Timestamp(args.new_symbol_start, tz="UTC").timestamp() * 1000)
     symbols = sorted(path.stem.removesuffix("_1h") for path in CACHE_DIR.glob("*_1h.csv"))
+    if args.refresh_universe:
+        current_symbols = get_futures_symbols(SimpleBinanceFuturesClient())
+        symbols = sorted(set(symbols) | set(current_symbols))
     rows: list[dict[str, object]] = []
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(update_symbol, symbol, target_ms): symbol for symbol in symbols}
+        futures = {executor.submit(update_symbol, symbol, target_ms, new_symbol_start_ms if args.refresh_universe else None): symbol for symbol in symbols}
         for future in as_completed(futures):
             try:
                 rows.append(future.result())

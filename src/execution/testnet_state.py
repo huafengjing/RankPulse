@@ -5,7 +5,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from src.research.rankpulse_strategy_rules import extreme_weak_exit_time_ms
+from src.research.rankpulse_strategy_rules import extreme_weak_exit_time_ms, rank1_weak_exit_time_ms
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,16 @@ class TestnetPosition:
     extreme_weak_exit_check_time_ms: int
     extreme_weak_exit_checked: bool = False
     weak_exit_checked: bool = False
+    rank1_weak_24h_exit_check_time_ms: int | None = None
+    rank1_weak_24h_exit_checked: bool = False
+    rank: int | None = None
+    mfe_aging_partial_tp_done: bool = False
+    mfe_aging_running_mfe_u: float = 0.0
+    mfe_aging_last_high_time_ms: int | None = None
+    mfe_aging_partial_tp_time_ms: int | None = None
+    mfe_aging_partial_tp_price: float | None = None
+    mfe_aging_partial_tp_realized_pnl: float = 0.0
+    mfe_aging_partial_tp_order_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +75,14 @@ class BootstrapVirtualPosition:
     volume_24h_ratio_7d: float | None
     extreme_weak_exit_checked: bool = False
     weak_exit_checked: bool = False
+    rank1_weak_24h_exit_check_time_ms: int | None = None
+    rank1_weak_24h_exit_checked: bool = False
+    mfe_aging_partial_tp_done: bool = False
+    mfe_aging_running_mfe_u: float = 0.0
+    mfe_aging_last_high_time_ms: int | None = None
+    mfe_aging_partial_tp_time_ms: int | None = None
+    mfe_aging_partial_tp_price: float | None = None
+    mfe_aging_partial_tp_realized_pnl: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -125,7 +143,7 @@ class TestnetStateStore:
             closed_positions=[TestnetClosedPosition(**item) for item in raw_state.get("closed_positions", [])],
             bootstrap_metadata=BootstrapMetadata(**raw_state.get("bootstrap_metadata", {})),
             bootstrap_virtual_positions=[
-                BootstrapVirtualPosition(**item)
+                BootstrapVirtualPosition(**_bootstrap_position_with_defaults(item))
                 for item in raw_state.get("bootstrap_virtual_positions", [])
             ],
             closed_bootstrap_virtual_positions=[
@@ -256,6 +274,118 @@ class TestnetStateStore:
             )
         )
 
+    def mark_rank1_weak_24h_exit_checked(self, symbol: str) -> None:
+        state = self.load()
+        self.save(
+            TestnetState(
+                open_positions=[
+                    TestnetPosition(
+                        **{
+                            **asdict(position),
+                            "rank1_weak_24h_exit_checked": True,
+                        }
+                    )
+                    if position.symbol == symbol
+                    else position
+                    for position in state.open_positions
+                ],
+                closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=[
+                    BootstrapVirtualPosition(
+                        **{
+                            **asdict(position),
+                            "rank1_weak_24h_exit_checked": True,
+                        }
+                    )
+                    if position.symbol == symbol
+                    else position
+                    for position in state.bootstrap_virtual_positions
+                ],
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
+                last_signal_time_ms=state.last_signal_time_ms,
+                last_exit_check_time_ms=state.last_exit_check_time_ms,
+                last_information_time_ms=state.last_information_time_ms,
+                last_preflight_time_ms=state.last_preflight_time_ms,
+            )
+        )
+
+    def update_mfe_aging_state(
+        self,
+        symbol: str,
+        running_mfe_u: float,
+        last_high_time_ms: int | None,
+    ) -> None:
+        state = self.load()
+        self.save(
+            TestnetState(
+                open_positions=[
+                    TestnetPosition(
+                        **{
+                            **asdict(position),
+                            "mfe_aging_running_mfe_u": running_mfe_u,
+                            "mfe_aging_last_high_time_ms": last_high_time_ms,
+                        }
+                    )
+                    if position.symbol == symbol
+                    else position
+                    for position in state.open_positions
+                ],
+                closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
+                last_signal_time_ms=state.last_signal_time_ms,
+                last_exit_check_time_ms=state.last_exit_check_time_ms,
+                last_information_time_ms=state.last_information_time_ms,
+                last_preflight_time_ms=state.last_preflight_time_ms,
+            )
+        )
+
+    def mark_mfe_aging_partial_tp_done(
+        self,
+        symbol: str,
+        qty: float,
+        partial_time_ms: int,
+        partial_price: float,
+        partial_realized_pnl: float,
+        order_id: int,
+        running_mfe_u: float,
+        last_high_time_ms: int | None,
+    ) -> None:
+        state = self.load()
+        self.save(
+            TestnetState(
+                open_positions=[
+                    TestnetPosition(
+                        **{
+                            **asdict(position),
+                            "qty": qty,
+                            "mfe_aging_partial_tp_done": True,
+                            "mfe_aging_running_mfe_u": running_mfe_u,
+                            "mfe_aging_last_high_time_ms": last_high_time_ms,
+                            "mfe_aging_partial_tp_time_ms": partial_time_ms,
+                            "mfe_aging_partial_tp_price": partial_price,
+                            "mfe_aging_partial_tp_realized_pnl": position.mfe_aging_partial_tp_realized_pnl
+                            + partial_realized_pnl,
+                            "mfe_aging_partial_tp_order_id": order_id,
+                        }
+                    )
+                    if position.symbol == symbol
+                    else position
+                    for position in state.open_positions
+                ],
+                closed_positions=state.closed_positions,
+                bootstrap_metadata=state.bootstrap_metadata,
+                bootstrap_virtual_positions=state.bootstrap_virtual_positions,
+                closed_bootstrap_virtual_positions=state.closed_bootstrap_virtual_positions,
+                last_signal_time_ms=state.last_signal_time_ms,
+                last_exit_check_time_ms=state.last_exit_check_time_ms,
+                last_information_time_ms=state.last_information_time_ms,
+                last_preflight_time_ms=state.last_preflight_time_ms,
+            )
+        )
+
     def close_bootstrap_virtual_position(
         self,
         symbol: str,
@@ -310,5 +440,34 @@ def _position_with_defaults(raw_position: dict[str, object]) -> dict[str, object
         "extreme_weak_exit_check_time_ms",
         extreme_weak_exit_time_ms(int(position["entry_time_ms"])),
     )
+    position.setdefault(
+        "rank1_weak_24h_exit_check_time_ms",
+        rank1_weak_exit_time_ms(int(position["entry_time_ms"])),
+    )
     position.setdefault("extreme_weak_exit_checked", False)
+    position.setdefault("rank1_weak_24h_exit_checked", False)
+    position.setdefault("rank", None)
+    position.setdefault("mfe_aging_partial_tp_done", False)
+    position.setdefault("mfe_aging_running_mfe_u", 0.0)
+    position.setdefault("mfe_aging_last_high_time_ms", None)
+    position.setdefault("mfe_aging_partial_tp_time_ms", None)
+    position.setdefault("mfe_aging_partial_tp_price", None)
+    position.setdefault("mfe_aging_partial_tp_realized_pnl", 0.0)
+    position.setdefault("mfe_aging_partial_tp_order_id", None)
+    return position
+
+
+def _bootstrap_position_with_defaults(raw_position: dict[str, object]) -> dict[str, object]:
+    position = dict(raw_position)
+    position.setdefault(
+        "rank1_weak_24h_exit_check_time_ms",
+        rank1_weak_exit_time_ms(int(position["entry_time_ms"])),
+    )
+    position.setdefault("rank1_weak_24h_exit_checked", False)
+    position.setdefault("mfe_aging_partial_tp_done", False)
+    position.setdefault("mfe_aging_running_mfe_u", 0.0)
+    position.setdefault("mfe_aging_last_high_time_ms", None)
+    position.setdefault("mfe_aging_partial_tp_time_ms", None)
+    position.setdefault("mfe_aging_partial_tp_price", None)
+    position.setdefault("mfe_aging_partial_tp_realized_pnl", 0.0)
     return position

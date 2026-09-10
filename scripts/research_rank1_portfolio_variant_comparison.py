@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import sys
 from dataclasses import dataclass
@@ -14,15 +16,29 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import scripts.regime_adaptive_leverage_walkforward as leverage_engine
-from scripts.backfill_old_half_and_run_main_strategy import DAY_MS, OUT, add_entry_factors, load_kline_map, max_drawdown, ms_to_utc, profit_factor, skipped_open_position_trade
-from scripts.backtest_futures_top2_fixed_time import generate_signals, latest_signal_end_dt
+from scripts.backfill_old_half_and_run_main_strategy import DAY_MS, OUT, add_entry_factors, backfill_symbols, bucket_volume, load_kline_map, max_drawdown, ms_to_utc, profit_factor, skipped_open_position_trade
+from scripts.backtest_futures_top2_fixed_time import SimpleBinanceFuturesClient, generate_signals, get_futures_symbols, latest_signal_end_dt
 from scripts.bucket_b_rank3_regime_optimization import EXCLUDE_SYMBOLS, IndicatorSpec, build_health_timeline, opportunity_sets
 from scripts.rank3_fast_recovery_vs_monthly_reset import RecoverySpec, build_recovery_timeline, fast_recovery_action_timeline
 from scripts.regime_adaptive_leverage_walkforward import bucket_for_signal, simulate_trade_with_leverage
-from scripts.run_current_main_strategy_2026_jan_jun import SIGNAL_START_MS, SNAPSHOT_HOURS_BJ, apply_entry_rules, cache_common_end_ms, cached_symbols
+from scripts.run_current_main_strategy_2026_jan_jun import SIGNAL_START_MS, SNAPSHOT_HOURS_BJ, cache_common_end_ms, cached_symbols, gain_bucket, leverage_for_signal
+from src.research.rankpulse_strategy_rules import (
+    PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MAX_DAYS,
+    PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MIN_DAYS,
+    same_symbol_reentry_block_reason,
+)
 
 
 OUT_DIR = OUT / "rank1_portfolio_variant_comparison"
+DEFAULT_SNAPSHOT_LOGS = [
+    ROOT / "data" / "live" / "production" / "events.jsonl",
+]
+FACTOR_COLUMNS = [
+    "ma_structure_4h",
+    "distance_to_4h_ma7_pct",
+    "volume_24h_ratio_7d",
+    "volume_24h_ratio_7d_bucket",
+]
 BASELINE = "baseline_rank2_rank3"
 RANK23_HOLD_DAYS = 6
 
@@ -81,6 +97,10 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     ret = pd.to_numeric(done["net_return_pct"], errors="coerce") if len(done) else pd.Series(dtype=float)
     liq = done["liquidated"].astype(bool) if len(done) and "liquidated" in done else pd.Series(dtype=bool)
     net = float(pnl.sum()) if len(pnl) else 0.0
+    ex_rave = done[~done["symbol"].astype(str).eq("RAVEUSDT")].copy() if len(done) else done
+    ex_rave_pnl = pd.to_numeric(ex_rave["pnl_u"], errors="coerce") if len(ex_rave) else pd.Series(dtype=float)
+    ex_rave_ret = pd.to_numeric(ex_rave["net_return_pct"], errors="coerce") if len(ex_rave) else pd.Series(dtype=float)
+    ex_rave_liq = ex_rave["liquidated"].astype(bool) if len(ex_rave) and "liquidated" in ex_rave else pd.Series(dtype=bool)
     return {
         "signals": int(len(frame)),
         "trades": int(len(done)),
@@ -95,6 +115,15 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "max_drawdown_u": max_drawdown(pnl),
         "liquidations": int(liq.sum()) if len(liq) else 0,
         "liq_rate": float(liq.sum() / len(done)) if len(done) else np.nan,
+        "ex_rave_trades": int(len(ex_rave)),
+        "ex_rave_net_pnl_u": float(ex_rave_pnl.sum()) if len(ex_rave_pnl) else 0.0,
+        "ex_rave_pf": profit_factor(ex_rave_pnl),
+        "ex_rave_win_rate": float((ex_rave_pnl > 0).sum() / len(ex_rave_pnl)) if len(ex_rave_pnl) else np.nan,
+        "ex_rave_median_return_pct": float(ex_rave_ret.median()) if len(ex_rave_ret) else np.nan,
+        "ex_rave_liquidations": int(ex_rave_liq.sum()) if len(ex_rave_liq) else 0,
+        "ex_rave_liq_rate": float(ex_rave_liq.sum() / len(ex_rave)) if len(ex_rave) else np.nan,
+        "rave_pnl_u": float(net - ex_rave_pnl.sum()) if len(done) else 0.0,
+        "rave_trades": int(done["symbol"].astype(str).eq("RAVEUSDT").sum()) if len(done) else 0,
         "ex_top1_pnl_u": float(net - pnl.nlargest(1).sum()) if len(pnl) >= 1 else np.nan,
         "ex_top3_pnl_u": float(net - pnl.nlargest(3).sum()) if len(pnl) >= 3 else np.nan,
         "ex_top5_pnl_u": float(net - pnl.nlargest(5).sum()) if len(pnl) >= 5 else np.nan,
@@ -104,13 +133,182 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+
+def snapshot_hour_bj(signal_time_ms: int) -> str:
+    return (ms_to_utc(signal_time_ms) + pd.Timedelta(hours=8)).strftime("%H:%M")
+
+
+def canonical_signal_time_ms(timestamp_ms: int) -> int:
+    return int(timestamp_ms) // 60_000 * 60_000
+
+
+def event_log_paths(paths: list[str] | None) -> list[Path]:
+    if paths:
+        return [Path(path) for path in paths]
+    return DEFAULT_SNAPSHOT_LOGS
+
+
+def load_live_event_signals(
+    paths: list[Path],
+    signal_start: int,
+    signal_end: int,
+    include_opened_fallback: bool,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_name = str(event.get("event", ""))
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                if event_name.endswith("_signal_snapshot"):
+                    snapshot_time = payload.get("signal_time_ms")
+                    snapshot_rows = payload.get("rows") or payload.get("snapshot_rows") or []
+                    if not isinstance(snapshot_rows, list):
+                        continue
+                    for item in snapshot_rows:
+                        if not isinstance(item, dict):
+                            continue
+                        signal_time = item.get("signal_time_ms", snapshot_time)
+                        if signal_time is None:
+                            continue
+                        signal_time = canonical_signal_time_ms(int(signal_time))
+                        if signal_time < signal_start or signal_time > signal_end:
+                            continue
+                        symbol = str(item.get("symbol", "")).upper()
+                        if not symbol:
+                            continue
+                        rows.append(
+                            {
+                                "signal_time": signal_time,
+                                "signal_time_utc": ms_to_utc(signal_time).strftime("%Y-%m-%d %H:%M:%S"),
+                                "signal_time_bj": (ms_to_utc(signal_time) + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                                "snapshot_hour_bj": snapshot_hour_bj(signal_time),
+                                "symbol": symbol,
+                                "rank": int(item.get("rank")),
+                                "gain_24h": float(item.get("gain_24h")),
+                                "volume_24h_ratio_7d": item.get("volume_24h_ratio_7d"),
+                                "live_price": item.get("price"),
+                                "live_passed": item.get("passed"),
+                                "live_filter_reason": item.get("filter_reason"),
+                                "live_leverage": item.get("leverage"),
+                                "signal_source": event_name,
+                                "source_priority": 0,
+                            }
+                        )
+                elif include_opened_fallback and event_name in {"live_opened", "testnet_opened", "paper_opened"}:
+                    entry_time = payload.get("entry_time_ms")
+                    if entry_time is None:
+                        continue
+                    signal_time = canonical_signal_time_ms(int(entry_time))
+                    if signal_time < signal_start or signal_time > signal_end:
+                        continue
+                    symbol = str(payload.get("symbol", "")).upper()
+                    if not symbol:
+                        continue
+                    rows.append(
+                        {
+                            "signal_time": signal_time,
+                            "signal_time_utc": ms_to_utc(signal_time).strftime("%Y-%m-%d %H:%M:%S"),
+                            "signal_time_bj": (ms_to_utc(signal_time) + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                            "snapshot_hour_bj": snapshot_hour_bj(signal_time),
+                            "symbol": symbol,
+                            "rank": int(payload.get("rank")),
+                            "gain_24h": float(payload.get("gain_24h")),
+                            "volume_24h_ratio_7d": np.nan,
+                            "live_price": payload.get("entry_price"),
+                            "live_passed": True,
+                            "live_filter_reason": "opened_event_fallback",
+                            "live_leverage": payload.get("leverage"),
+                            "signal_source": event_name,
+                            "source_priority": 1,
+                        }
+                    )
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    frame["volume_24h_ratio_7d"] = pd.to_numeric(frame["volume_24h_ratio_7d"], errors="coerce")
+    frame["gain_24h"] = pd.to_numeric(frame["gain_24h"], errors="coerce")
+    frame = frame.dropna(subset=["signal_time", "symbol", "rank", "gain_24h"])
+    frame = frame.sort_values(["signal_time", "source_priority", "rank", "symbol"])
+    return frame.drop_duplicates(["signal_time", "symbol"], keep="first").reset_index(drop=True)
+
+
+def combine_signal_sources(reconstructed: pd.DataFrame, live: pd.DataFrame, source: str) -> pd.DataFrame:
+    if source == "reconstructed":
+        out = reconstructed.copy()
+        out["signal_source"] = "reconstructed_1h_close"
+        return out
+    if source == "live_snapshots":
+        return live.copy()
+    if live.empty:
+        out = reconstructed.copy()
+        out["signal_source"] = "reconstructed_1h_close"
+        return out
+    live_times = set(live["signal_time"].astype(int).unique())
+    historical = reconstructed[~reconstructed["signal_time"].astype(int).isin(live_times)].copy()
+    historical["signal_source"] = "reconstructed_1h_close"
+    return pd.concat([historical, live], ignore_index=True, sort=False).sort_values(["signal_time", "rank", "symbol"]).reset_index(drop=True)
+
+
+def add_entry_factors_preserving(signals: pd.DataFrame, kline_map: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if signals.empty:
+        return signals.copy()
+    preserved_volume = pd.to_numeric(signals.get("volume_24h_ratio_7d", pd.Series(np.nan, index=signals.index)), errors="coerce")
+    base = signals.drop(columns=[col for col in FACTOR_COLUMNS if col in signals.columns]).copy()
+    enriched = add_entry_factors(base, kline_map)
+    live_volume = preserved_volume.reset_index(drop=True)
+    enriched_volume = pd.to_numeric(enriched["volume_24h_ratio_7d"], errors="coerce")
+    enriched["volume_24h_ratio_7d"] = live_volume.where(live_volume.notna(), enriched_volume)
+    enriched["volume_24h_ratio_7d_bucket"] = enriched["volume_24h_ratio_7d"].map(bucket_volume)
+    return enriched
+
+
+def apply_entry_rules_preserving(signals: pd.DataFrame, kline_map: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if signals.empty:
+        return signals.copy()
+    signals = signals[
+        signals["snapshot_hour_bj"].isin(SNAPSHOT_HOURS_BJ)
+        & signals["rank"].isin([2, 3])
+        & signals["gain_24h"].ge(0.10)
+        & signals["gain_24h"].lt(0.80)
+    ].copy()
+    signals = add_entry_factors_preserving(signals, kline_map)
+    signals["leverage"] = signals.apply(leverage_for_signal, axis=1)
+    if "live_leverage" in signals.columns:
+        live_leverage = pd.to_numeric(signals["live_leverage"], errors="coerce")
+        signals["leverage"] = live_leverage.where(live_leverage.notna(), signals["leverage"])
+    signals = signals[signals["leverage"].notna()].copy()
+    signals["leverage"] = signals["leverage"].astype(int)
+    signals["gain_24h_bucket"] = signals["gain_24h"].astype(float).map(gain_bucket)
+    return signals.sort_values(["signal_time", "rank", "symbol"]).reset_index(drop=True)
+
+
+def refresh_missing_current_symbols(symbols: list[str], target_ms: int, sleep_seconds: float) -> list[str]:
+    client = SimpleBinanceFuturesClient()
+    current_symbols = get_futures_symbols(client)
+    cached = set(cached_symbols())
+    missing = sorted(set(current_symbols) - cached)
+    if missing:
+        print(f"Refreshing missing current symbols: {len(missing)}", flush=True)
+        backfill_symbols(missing, SIGNAL_START_MS - 10 * DAY_MS, target_ms, sleep_seconds)
+    return sorted(set(cached_symbols()) | set(current_symbols) | set(symbols))
+
+
 def add_rank1_candidates(raw: pd.DataFrame, kline_map: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rank1 = raw[
         raw["snapshot_hour_bj"].isin(SNAPSHOT_HOURS_BJ)
         & raw["rank"].eq(1)
-        & raw["symbol"].astype(str).ne("RAVEUSDT")
     ].copy()
-    rank1 = add_entry_factors(rank1, kline_map)
+    rank1 = add_entry_factors_preserving(rank1, kline_map)
     rank1["rank1_cell"] = rank1.apply(rank1_cell, axis=1)
     rank1 = rank1[rank1["rank1_cell"].notna()].copy()
     rank1["strategy_component"] = "Rank1"
@@ -120,7 +318,8 @@ def add_rank1_candidates(raw: pd.DataFrame, kline_map: dict[str, pd.DataFrame]) 
 
 def build_fr3_yr1_actions(raw: pd.DataFrame, rank23: pd.DataFrame, kline_map: dict[str, pd.DataFrame]) -> pd.DataFrame:
     signal_times = sorted(rank23["signal_time"].astype(int).unique())
-    sets = opportunity_sets(raw, kline_map)
+    regime_raw = raw.drop(columns=[col for col in FACTOR_COLUMNS if col in raw.columns]).copy()
+    sets = opportunity_sets(regime_raw, kline_map)
     d15 = build_health_timeline(signal_times, sets["B_R3"], IndicatorSpec("D_b_r3_decay_l15", "B_R3", "mean_decay48", "lower_bad", 15))
     recovery = build_recovery_timeline(signal_times, sets["B_R3"], RecoverySpec("avg_return24_l3_gt_0", "avg_return24", 3, "gt_0"))
     return fast_recovery_action_timeline(d15, recovery, "fr3", "yr1", "FR_avg_return24_l3_gt_0_fr3_yr1")
@@ -181,6 +380,8 @@ def replay_portfolio(
     action_by_time = actions.set_index("signal_time").to_dict("index") if not actions.empty else {}
     rows: list[dict[str, Any]] = []
     open_by_symbol: dict[str, dict[str, Any]] = {}
+    last_entry_by_symbol: dict[str, int] = {}
+    last_pnl_by_symbol: dict[str, float] = {}
     for _, signal in signals.sort_values(["signal_time", "rank", "symbol"]).iterrows():
         rank = int(signal["rank"])
         if rank == 1 and variant is None:
@@ -212,6 +413,10 @@ def replay_portfolio(
             "base_state": action.get("base_state", "NA" if rank == 1 else "GREEN"),
             "recovery_signal": bool(action.get("recovery_signal", False)),
             "rank1_adaptive_like_rank3": bool(variant.adaptive_like_rank3) if variant else False,
+            "signal_source": signal.get("signal_source", "reconstructed_1h_close"),
+            "live_price": signal.get("live_price", np.nan),
+            "live_passed": signal.get("live_passed", np.nan),
+            "live_filter_reason": signal.get("live_filter_reason", ""),
         }
         open_info = open_by_symbol.get(symbol)
         if open_info is not None and signal_time < int(open_info["open_until"]):
@@ -231,6 +436,40 @@ def replay_portfolio(
                 }
             )
             continue
+        reentry_reason = same_symbol_reentry_block_reason(
+            symbol,
+            signal_time,
+            last_entry_by_symbol,
+            last_pnl_by_symbol,
+        )
+        if reentry_reason is not None:
+            row = skipped_open_position_trade(signal, signal_time)
+            row["leverage"] = lev
+            days_since_prev_trade = (signal_time - last_entry_by_symbol[symbol]) / DAY_MS
+            skip_reason = (
+                "prev_win_same_symbol_reentry_0_30d"
+                if "Previous winning" in reentry_reason
+                else (
+                    f"prev_loss_same_symbol_reentry_"
+                    f"{PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MIN_DAYS}_"
+                    f"{PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MAX_DAYS}d"
+                )
+            )
+            rows.append(
+                row
+                | common
+                | {
+                    "status": "skipped",
+                    "skip_reason": skip_reason,
+                    "filter_reason": reentry_reason,
+                    "days_since_prev_trade": days_since_prev_trade,
+                    "prev_pnl_u": last_pnl_by_symbol.get(symbol, np.nan),
+                    "blocking_entry_time_ms": last_entry_by_symbol[symbol],
+                    "blocking_entry_time_utc": ms_to_utc(last_entry_by_symbol[symbol]).strftime("%Y-%m-%d %H:%M:%S"),
+                    "blocking_component": "same_symbol_last_trade",
+                }
+            )
+            continue
         trade = outcomes[(int(signal["signal_id"]), lev, hold_days)].copy()
         rows.append(trade | common)
         if trade.get("status") in {"completed", "open_mark_to_market"}:
@@ -242,6 +481,8 @@ def replay_portfolio(
                 "entry_time_ms": signal_time,
                 "pnl_u": trade.get("pnl_u", np.nan),
             }
+            last_entry_by_symbol[symbol] = signal_time
+            last_pnl_by_symbol[symbol] = float(trade.get("pnl_u", np.nan))
     return pd.DataFrame(rows)
 
 
@@ -328,6 +569,9 @@ def build_outputs(trades_by_strategy: dict[str, pd.DataFrame], cutoff_ms: int, s
         "max_drawdown_u",
         "liquidations",
         "liq_rate",
+        "ex_rave_net_pnl_u",
+        "rave_pnl_u",
+        "rave_trades",
         "ex_top1_pnl_u",
         "ex_top3_pnl_u",
         "ex_top5_pnl_u",
@@ -341,6 +585,8 @@ def build_outputs(trades_by_strategy: dict[str, pd.DataFrame], cutoff_ms: int, s
         f"- Cutoff: {ms_to_utc(cutoff_ms).strftime('%Y-%m-%d %H:%M:%S')} UTC",
         f"- Signal end: {ms_to_utc(signal_end).strftime('%Y-%m-%d %H:%M:%S')} UTC",
         "- Rank1 entries: Rank1 20-40/V2-3, 20-40/V5-6, 40-60/V2-3 only.",
+        "- RAVEUSDT is included in gross results; Ex-RAVE metrics are printed separately for optimization stability.",
+        f"- Signal source: {next(iter(trades_by_strategy.values())).get('signal_source', pd.Series(['unknown'])).dropna().astype(str).unique().tolist() if trades_by_strategy else []}.",
         "- Portfolio replay: same-symbol lock active; Rank2/3 keep current FR3/YR1 and 6D hold.",
         "- Adaptive Rank1 variant uses current FR3/YR1 Rank3 leverage at each timestamp.",
         "- Fees: 0.1% per side; slippage 0.",
@@ -352,15 +598,43 @@ def build_outputs(trades_by_strategy: dict[str, pd.DataFrame], cutoff_ms: int, s
     print(summary[view_cols].round(4).to_string(index=False))
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    symbols = [s for s in cached_symbols() if s not in EXCLUDE_SYMBOLS]
-    common_end = cache_common_end_ms(symbols)
-    signal_end = min(int(latest_signal_end_dt().timestamp() * 1000), common_end)
-    kline_map = load_kline_map(symbols, SIGNAL_START_MS - 10 * DAY_MS, common_end)
-    raw = generate_signals(SIGNAL_START_MS, signal_end, kline_map)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--signal-source",
+        choices=["reconstructed", "live_snapshots", "hybrid"],
+        default="hybrid",
+        help="reconstructed=1H close rebuilt rankings; live_snapshots=event log only; hybrid=live event windows override rebuilt history.",
+    )
+    parser.add_argument("--snapshot-log", action="append", help="Path to events.jsonl containing *_signal_snapshot or *_opened events. May be repeated.")
+    parser.add_argument("--no-opened-fallback", action="store_true", help="Do not use *_opened events when signal snapshots are absent.")
+    parser.add_argument("--refresh-universe", action="store_true", help="Fetch current Binance USDT perpetual symbols and backfill missing local 1H caches.")
+    parser.add_argument("--sleep", type=float, default=0.12)
+    return parser.parse_args()
 
-    rank23 = apply_entry_rules(raw, kline_map).copy()
+
+def main() -> None:
+    args = parse_args()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    target_end = int(latest_signal_end_dt().timestamp() * 1000)
+    symbols = cached_symbols()
+    if args.refresh_universe:
+        symbols = refresh_missing_current_symbols(symbols, target_end, args.sleep)
+    symbols = [s for s in symbols if s not in EXCLUDE_SYMBOLS]
+    common_end = cache_common_end_ms(symbols)
+    signal_end = min(target_end, common_end)
+    kline_map = load_kline_map(symbols, SIGNAL_START_MS - 10 * DAY_MS, common_end)
+    reconstructed = generate_signals(SIGNAL_START_MS, signal_end, kline_map)
+    live = load_live_event_signals(
+        event_log_paths(args.snapshot_log),
+        SIGNAL_START_MS,
+        signal_end,
+        include_opened_fallback=not args.no_opened_fallback,
+    )
+    raw = combine_signal_sources(reconstructed, live, args.signal_source)
+    raw.to_csv(OUT_DIR / "raw_signals_selected_source.csv", index=False, encoding="utf-8-sig")
+
+    rank23 = apply_entry_rules_preserving(raw, kline_map).copy()
     rank23["strategy_component"] = rank23["rank"].map(lambda r: f"Rank{int(r)}")
     rank23["bucket"] = rank23.apply(bucket_for_signal, axis=1)
     rank23["rank1_cell"] = ""

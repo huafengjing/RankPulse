@@ -8,7 +8,7 @@ from src.config.modes import SignalMode, TradingMode
 from src.config.settings import AppSettings
 from src.exchange.binance_testnet import FuturesPosition
 from src.execution.testnet_runner import TestnetTradingRunner, _safe_print
-from src.execution.testnet_state import TestnetPosition, TestnetState, TestnetStateStore
+from src.execution.testnet_state import TestnetClosedPosition, TestnetPosition, TestnetState, TestnetStateStore
 from src.market.binance_futures import Kline, Ticker24hrStat
 from src.paper.store import PaperEventLogger
 from src.research.rankpulse_strategy_rules import DAY_MS, Top3RegimeContext
@@ -120,6 +120,92 @@ def test_production_runner_opens_rank1_candidate_with_5d_planned_exit() -> None:
     assert rank1.planned_exit_time_ms == now_ms + 5 * DAY_MS
     assert rank2.planned_exit_time_ms == now_ms + 6 * DAY_MS
     assert ("set_leverage", "RANK1USDT", 3) in execution_client.calls
+
+
+def test_production_runner_blocks_losing_same_symbol_reentry_14_to_27_days_after_last_entry() -> None:
+    workdir = _clean_workdir("testnet_runner_same_symbol_reentry_filter")
+    now_ms = bj_ms(8, 0)
+    state_store = TestnetStateStore(workdir / "state.json")
+    state_store.save(
+        TestnetState(
+            open_positions=[],
+            closed_positions=[
+                TestnetClosedPosition(
+                    symbol="RANK2USDT",
+                    entry_time_ms=now_ms - 20 * DAY_MS,
+                    exit_time_ms=now_ms - 14 * DAY_MS,
+                    entry_price=20.0,
+                    exit_price=19.0,
+                    qty=1.0,
+                    leverage=3,
+                    entry_order_id=1,
+                    exit_order_id=2,
+                    realized_pnl=-1.0,
+                    exit_reason="planned",
+                )
+            ],
+        )
+    )
+    execution_client = FakeTestnetClient()
+    runner = TestnetTradingRunner(
+        market_client=FakeMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.TESTNET,
+            signal_mode=SignalMode.PRODUCTION,
+            position_margin_usdt=10,
+        ),
+    )
+
+    opened = runner.run_signal_cycle(now_ms)
+
+    assert [position.symbol for position in opened] == ["RANK3USDT"]
+    assert ("set_leverage", "RANK2USDT", 3) not in execution_client.calls
+
+
+def test_production_runner_blocks_previous_winner_same_symbol_reentry_before_30_days() -> None:
+    workdir = _clean_workdir("testnet_runner_prev_win_reentry_filter")
+    now_ms = bj_ms(8, 0)
+    state_store = TestnetStateStore(workdir / "state.json")
+    state_store.save(
+        TestnetState(
+            open_positions=[],
+            closed_positions=[
+                TestnetClosedPosition(
+                    symbol="RANK2USDT",
+                    entry_time_ms=now_ms - 10 * DAY_MS,
+                    exit_time_ms=now_ms - 4 * DAY_MS,
+                    entry_price=20.0,
+                    exit_price=21.0,
+                    qty=1.0,
+                    leverage=3,
+                    entry_order_id=1,
+                    exit_order_id=2,
+                    realized_pnl=1.0,
+                    exit_reason="planned",
+                )
+            ],
+        )
+    )
+    execution_client = FakeTestnetClient()
+    runner = TestnetTradingRunner(
+        market_client=FakeMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.TESTNET,
+            signal_mode=SignalMode.PRODUCTION,
+            position_margin_usdt=10,
+        ),
+    )
+
+    opened = runner.run_signal_cycle(now_ms)
+
+    assert [position.symbol for position in opened] == ["RANK3USDT"]
+    assert ("set_leverage", "RANK2USDT", 3) not in execution_client.calls
 
 
 def test_regime_generation_failure_fails_closed_before_signal_or_order() -> None:
@@ -392,9 +478,68 @@ def test_23_information_cycle_forwards_table_without_placing_orders() -> None:
     assert state_store.load().last_signal_time_ms is None
 
 
-def test_market_preflight_sends_telegram_30_minutes_before_signal() -> None:
+def test_information_snapshot_marks_existing_position_as_skip() -> None:
+    workdir = _clean_workdir("testnet_runner_info_existing_position_skip")
+    now_ms = bj_ms(23, 0)
+    notifier = FakeNotifier()
+    execution_client = FakeTestnetClient()
+    state_store = TestnetStateStore(workdir / "state.json")
+    state_store.save(TestnetState(open_positions=[_local_position("RANK3USDT")], closed_positions=[]))
+    runner = TestnetTradingRunner(
+        market_client=FakeMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.LIVE,
+            signal_mode=SignalMode.PRODUCTION,
+            position_margin_usdt=10,
+        ),
+        signal_notifier=notifier,
+        event_prefix="live",
+    )
+
+    sent = runner.run_information_cycle(now_ms)
+
+    assert sent is True
+    assert len(notifier.messages) == 1
+    assert "RANK3USDT |    3 |    33 | 20.0% | 1.75 | SKIP" in notifier.messages[0]
+    assert "RANK3USDT: 已有持仓" in notifier.messages[0]
+    assert "RANK3USDT |    3 |    33 | 20.0% | 1.75 | PASS" not in notifier.messages[0]
+    assert execution_client.calls == []
+
+
+def test_trade_snapshot_marks_existing_position_as_skip_before_execution() -> None:
+    workdir = _clean_workdir("testnet_runner_trade_existing_position_skip")
+    now_ms = bj_ms(8, 0)
+    notifier = FakeNotifier()
+    execution_client = FakeTestnetClient()
+    state_store = TestnetStateStore(workdir / "state.json")
+    state_store.save(TestnetState(open_positions=[_local_position("RANK3USDT")], closed_positions=[]))
+    runner = TestnetTradingRunner(
+        market_client=FakeMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.LIVE,
+            signal_mode=SignalMode.PRODUCTION,
+            position_margin_usdt=10,
+        ),
+        signal_notifier=notifier,
+        event_prefix="live",
+    )
+
+    opened = runner.run_signal_cycle(now_ms)
+
+    assert [position.symbol for position in opened] == ["RANK2USDT"]
+    assert "RANK3USDT |    3 |    33 | 20.0% | 1.75 | SKIP" in notifier.messages[0]
+    assert "RANK3USDT: 已有持仓" in notifier.messages[0]
+    assert ("market_open_long", "RANK3USDT", "0.909") not in execution_client.calls
+
+def test_market_preflight_is_silent_when_binance_public_api_is_ok() -> None:
     workdir = _clean_workdir("testnet_runner_preflight_ok")
-    now_ms = bj_ms(22, 30)
+    now_ms = bj_ms(7, 0)
     notifier = FakeNotifier()
     state_store = TestnetStateStore(workdir / "state.json")
     runner = TestnetTradingRunner(
@@ -414,18 +559,14 @@ def test_market_preflight_sends_telegram_30_minutes_before_signal() -> None:
     first = runner.run_market_preflight_cycle(now_ms)
     second = runner.run_market_preflight_cycle(now_ms + 45_000)
 
-    assert first is True
+    assert first is False
     assert second is False
-    assert len(notifier.messages) == 1
-    assert "2026-06-17 22:30:00 | MARKET PREFLIGHT" in notifier.messages[0]
-    assert "STATUS: OK" in notifier.messages[0]
-    assert "TARGET: 2026-06-17 23:00:00" in notifier.messages[0]
-    assert state_store.load().last_preflight_time_ms == bj_ms(22, 30)
-
+    assert notifier.messages == []
+    assert state_store.load().last_preflight_time_ms == bj_ms(7, 0)
 
 def test_market_preflight_sends_telegram_when_binance_public_api_is_blocked() -> None:
     workdir = _clean_workdir("testnet_runner_preflight_blocked")
-    now_ms = bj_ms(23, 30)
+    now_ms = bj_ms(23, 0)
     notifier = FakeNotifier()
     state_store = TestnetStateStore(workdir / "state.json")
     runner = TestnetTradingRunner(
@@ -446,11 +587,43 @@ def test_market_preflight_sends_telegram_when_binance_public_api_is_blocked() ->
 
     assert sent is True
     assert len(notifier.messages) == 1
-    assert "STATUS: FAILED" in notifier.messages[0]
-    assert "TARGET: 2026-06-18 00:00:00" in notifier.messages[0]
+    assert "状态：失败" in notifier.messages[0]
+    assert "目标时间：2026-06-18 00:00:00" in notifier.messages[0]
     assert "HTTP 418" in notifier.messages[0]
-    assert state_store.load().last_preflight_time_ms == bj_ms(23, 30)
+    assert state_store.load().last_preflight_time_ms == bj_ms(23, 0)
 
+
+def test_market_preflight_sends_telegram_when_private_position_api_is_blocked() -> None:
+    workdir = _clean_workdir("testnet_runner_preflight_private_blocked")
+    now_ms = bj_ms(23, 0)
+    notifier = FakeNotifier()
+    execution_client = FakeTestnetClient()
+    execution_client.open_positions_error = RuntimeError(
+        "Binance Live API error on /fapi/v2/positionRisk: HTTP 418, code=-1003, msg=IP banned"
+    )
+    state_store = TestnetStateStore(workdir / "state.json")
+    runner = TestnetTradingRunner(
+        market_client=FakeMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.LIVE,
+            signal_mode=SignalMode.PRODUCTION,
+            position_margin_usdt=10,
+        ),
+        signal_notifier=notifier,
+        event_prefix="live",
+    )
+
+    sent = runner.run_market_preflight_cycle(now_ms)
+
+    assert sent is True
+    assert len(notifier.messages) == 1
+    assert "状态：失败" in notifier.messages[0]
+    assert "私有持仓接口 positionRisk" in notifier.messages[0]
+    assert "/fapi/v2/positionRisk" in notifier.messages[0]
+    assert state_store.load().last_preflight_time_ms == bj_ms(23, 0)
 
 def test_rank2_execution_failure_does_not_block_rank3() -> None:
     workdir = _clean_workdir("testnet_runner_continue_after_failure")
@@ -650,6 +823,84 @@ def test_weak_exit_no_exit_is_marked_checked_once() -> None:
     assert state_store.load().open_position("RANK2USDT").weak_exit_checked is True  # type: ignore[union-attr]
 
 
+def test_rank1_rank2_24h_weak_exit_closes_rank1_and_rank2_after_12h_checks() -> None:
+    workdir = _clean_workdir("testnet_runner_rank1_24h_weak")
+    now_ms = bj_ms(8, 5)
+    state_store = TestnetStateStore(workdir / "state.json")
+    state_store.save(
+        TestnetState(
+            open_positions=[
+                TestnetPosition(
+                    symbol="RANK1USDT",
+                    entry_time_ms=now_ms,
+                    entry_price=20.0,
+                    qty=1.0,
+                    leverage=3,
+                    order_id=101,
+                    planned_exit_time_ms=now_ms + 60 * 60 * 1000,
+                    extreme_weak_exit_check_time_ms=now_ms + 5 * 60 * 1000,
+                    weak_exit_check_time_ms=now_ms + 15 * 60 * 1000,
+                    rank1_weak_24h_exit_check_time_ms=now_ms + 30 * 60 * 1000,
+                    extreme_weak_exit_checked=True,
+                    rank=1,
+                ),
+                TestnetPosition(
+                    symbol="RANK2USDT",
+                    entry_time_ms=now_ms,
+                    entry_price=20.0,
+                    qty=1.0,
+                    leverage=3,
+                    order_id=102,
+                    planned_exit_time_ms=now_ms + 60 * 60 * 1000,
+                    extreme_weak_exit_check_time_ms=now_ms + 5 * 60 * 1000,
+                    weak_exit_check_time_ms=now_ms + 15 * 60 * 1000,
+                    rank1_weak_24h_exit_check_time_ms=now_ms + 30 * 60 * 1000,
+                    extreme_weak_exit_checked=True,
+                    rank=2,
+                ),
+                TestnetPosition(
+                    symbol="RANK3USDT",
+                    entry_time_ms=now_ms,
+                    entry_price=20.0,
+                    qty=1.0,
+                    leverage=5,
+                    order_id=103,
+                    planned_exit_time_ms=now_ms + 60 * 60 * 1000,
+                    extreme_weak_exit_check_time_ms=now_ms + 5 * 60 * 1000,
+                    weak_exit_check_time_ms=now_ms + 15 * 60 * 1000,
+                    rank1_weak_24h_exit_check_time_ms=now_ms + 30 * 60 * 1000,
+                    extreme_weak_exit_checked=True,
+                    rank=3,
+                ),
+            ],
+            closed_positions=[],
+        )
+    )
+    execution_client = FakeTestnetClient()
+    execution_client.exchange_positions = {
+        "RANK1USDT": FuturesPosition(symbol="RANK1USDT", position_amt=1.0, entry_price=20.0),
+        "RANK2USDT": FuturesPosition(symbol="RANK2USDT", position_amt=1.0, entry_price=20.0),
+        "RANK3USDT": FuturesPosition(symbol="RANK3USDT", position_amt=1.0, entry_price=20.0),
+    }
+    runner = TestnetTradingRunner(
+        market_client=Rank1Weak24hMarketClient(now_ms),
+        execution_client=execution_client,
+        state_store=state_store,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(
+            trading_mode=TradingMode.TESTNET,
+            signal_mode=SignalMode.TEST_FAST,
+            position_margin_usdt=10,
+        ),
+    )
+
+    closed = runner.run_weak_exit_checks(now_ms + 30 * 60 * 1000)
+
+    assert [position.symbol for position in closed] == ["RANK1USDT", "RANK2USDT"]
+    assert all(position.exit_reason == "weak_24h_rank1_rank2" for position in closed)
+    assert state_store.load().open_position("RANK3USDT") is not None
+
+
 class FakeMarketClient:
     def __init__(self, signal_time_ms: int) -> None:
         self.signal_time_ms = signal_time_ms
@@ -767,6 +1018,23 @@ class NoWeakExitMarketClient(FakeMarketClient):
         ]
 
 
+class Rank1Weak24hMarketClient(FakeMarketClient):
+    def klines(self, symbol: str, interval: str, limit: int, end_time_ms: int | None = None) -> list[Kline]:
+        start = self.signal_time_ms
+        return [
+            Kline(
+                open_time_ms=start + index * 60 * 1000,
+                open=20.0,
+                high=21.2,
+                low=19.0,
+                close=19.8,
+                volume=1.0,
+                close_time_ms=start + (index + 1) * 60 * 1000 - 1,
+            )
+            for index in range(limit)
+        ]
+
+
 class FakeNotifier:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -818,3 +1086,7 @@ def _local_position(symbol: str) -> TestnetPosition:
         extreme_weak_exit_check_time_ms=1_700_010_000_000,
         weak_exit_check_time_ms=1_700_020_000_000,
     )
+
+
+
+

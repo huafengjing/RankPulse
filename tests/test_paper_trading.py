@@ -6,6 +6,7 @@ from src.paper.trading import (
     LIVE_ORDER_CONFIRMATION_PHRASE,
     LiveTradingDisabledError,
     PaperExtremeWeakExitCheck,
+    PaperRank1Weak24hExitCheck,
     PaperSignal,
     PaperTradingConfig,
     PaperTradingEngine,
@@ -166,6 +167,98 @@ def test_paper_trading_can_disable_12h_weak_exit_explicitly() -> None:
 
     assert trade_exit is None
     assert engine.open_position("AAAUSDT") is not None
+
+
+def test_paper_trading_rank1_24h_weak_exit_is_enabled_by_default() -> None:
+    engine = PaperTradingEngine()
+    entry_time_ms = 1_700_000_000_000
+    engine.on_signal(
+        PaperSignal(
+            symbol="RANK1USDT",
+            rank=1,
+            gain_24h=0.25,
+            volume_24h_ratio_7d=2.5,
+            snapshot_hour_bj="00:00",
+            signal_time_ms=entry_time_ms,
+            fill_price=10.0,
+        )
+    )
+
+    trade_exit = engine.on_rank1_weak_24h_exit_check(
+        PaperRank1Weak24hExitCheck(
+            symbol="RANK1USDT",
+            check_time_ms=entry_time_ms + 24 * HOUR_MS,
+            fill_price=9.7,
+            mfe_24h=0.079,
+            close_return_24h=-0.001,
+            mae_24h=-0.08,
+        )
+    )
+
+    assert trade_exit is not None
+    assert trade_exit.exit_reason == "weak_24h_rank1_rank2"
+    assert engine.open_position("RANK1USDT") is None
+
+
+def test_paper_trading_rank1_24h_weak_exit_applies_to_rank2() -> None:
+    engine = PaperTradingEngine()
+    entry_time_ms = 1_700_000_000_000
+    engine.on_signal(
+        PaperSignal(
+            symbol="RANK2USDT",
+            rank=2,
+            gain_24h=0.25,
+            volume_24h_ratio_7d=2.5,
+            snapshot_hour_bj="00:00",
+            signal_time_ms=entry_time_ms,
+            fill_price=10.0,
+        )
+    )
+
+    trade_exit = engine.on_rank1_weak_24h_exit_check(
+        PaperRank1Weak24hExitCheck(
+            symbol="RANK2USDT",
+            check_time_ms=entry_time_ms + 24 * HOUR_MS,
+            fill_price=9.7,
+            mfe_24h=0.079,
+            close_return_24h=-0.001,
+            mae_24h=-0.08,
+        )
+    )
+
+    assert trade_exit is not None
+    assert trade_exit.exit_reason == "weak_24h_rank1_rank2"
+    assert engine.open_position("RANK2USDT") is None
+
+
+def test_paper_trading_rank1_24h_weak_exit_does_not_apply_to_rank3() -> None:
+    engine = PaperTradingEngine()
+    entry_time_ms = 1_700_000_000_000
+    engine.on_signal(
+        PaperSignal(
+            symbol="RANK3USDT",
+            rank=3,
+            gain_24h=0.25,
+            volume_24h_ratio_7d=2.5,
+            snapshot_hour_bj="00:00",
+            signal_time_ms=entry_time_ms,
+            fill_price=10.0,
+        )
+    )
+
+    trade_exit = engine.on_rank1_weak_24h_exit_check(
+        PaperRank1Weak24hExitCheck(
+            symbol="RANK3USDT",
+            check_time_ms=entry_time_ms + 24 * HOUR_MS,
+            fill_price=9.7,
+            mfe_24h=0.079,
+            close_return_24h=-0.001,
+            mae_24h=-0.08,
+        )
+    )
+
+    assert trade_exit is None
+    assert engine.open_position("RANK3USDT") is not None
 
 
 def test_paper_trading_4h_extreme_weak_exit_is_enabled_by_default() -> None:

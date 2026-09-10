@@ -269,6 +269,59 @@ def test_testnet_close_uses_reduce_only_and_marks_position_closed() -> None:
     assert state.load().open_position("AAAUSDT") is None
 
 
+def test_partial_close_keeps_position_open_and_final_close_includes_realized_partial_pnl() -> None:
+    workdir = _clean_workdir("testnet_partial_close")
+    client = FakeTestnetClient()
+    state = TestnetStateStore(workdir / "state.json")
+    state.save_positions(
+        [
+            TestnetPosition(
+                symbol="AAAUSDT",
+                entry_time_ms=1_700_000_000_000,
+                entry_price=20.0,
+                qty=10.0,
+                leverage=5,
+                order_id=123,
+                planned_exit_time_ms=1_700_000_200_000,
+                extreme_weak_exit_check_time_ms=1_700_000_025_000,
+                weak_exit_check_time_ms=1_700_000_050_000,
+            )
+        ]
+    )
+    client.exchange_positions = {"AAAUSDT": FuturesPosition("AAAUSDT", 10.0, 20.0)}
+    engine = TestnetExecutionEngine(
+        client=client,
+        filter_provider=FakeFilterProvider(),
+        state_store=state,
+        logger=PaperEventLogger(workdir / "events.jsonl"),
+        settings=AppSettings(trading_mode=TradingMode.TESTNET, signal_mode=SignalMode.TEST_FAST),
+    )
+
+    remaining = engine.partial_close_position(
+        "AAAUSDT",
+        exit_time_ms=1_700_000_100_000,
+        running_mfe_u=500.0,
+        last_high_time_ms=1_700_000_010_000,
+    )
+
+    assert remaining is not None
+    assert client.calls[:2] == [
+        ("market_close_long", "AAAUSDT", "4.000"),
+        ("order", "AAAUSDT", 456),
+    ]
+    assert state.load().open_position("AAAUSDT") is not None
+    assert state.load().open_position("AAAUSDT").qty == 6.0
+    assert state.load().open_position("AAAUSDT").mfe_aging_partial_tp_done is True
+    assert state.load().open_position("AAAUSDT").mfe_aging_partial_tp_realized_pnl == 40.0
+
+    closed = engine.close_position("AAAUSDT", exit_time_ms=1_700_000_200_000, reason="planned")
+
+    assert closed is not None
+    assert closed.qty == 6.0
+    assert closed.realized_pnl == 100.0
+    assert state.load().open_position("AAAUSDT") is None
+
+
 def test_close_reconciles_position_when_order_query_keeps_returning_not_found(monkeypatch) -> None:
     monkeypatch.setattr(testnet_engine.time, "sleep", lambda seconds: None)
     workdir = _clean_workdir("close_order_query_reconcile")
@@ -402,7 +455,17 @@ class FakeTestnetClient:
     def market_close_long(self, symbol: str, quantity: str) -> dict[str, object]:
         self.calls.append(("market_close_long", symbol, quantity))
         self._last_qty_by_symbol[symbol] = quantity
-        self.exchange_positions.pop(symbol, None)
+        existing = self.exchange_positions.get(symbol)
+        if existing is not None:
+            remaining = round(existing.position_amt - float(quantity), 12)
+            if remaining > 0:
+                self.exchange_positions[symbol] = FuturesPosition(
+                    symbol=symbol,
+                    position_amt=remaining,
+                    entry_price=existing.entry_price,
+                )
+            else:
+                self.exchange_positions.pop(symbol, None)
         return {"orderId": 456, "avgPrice": "30.0", "executedQty": quantity}
 
 
@@ -429,3 +492,4 @@ def _clean_workdir(name: str) -> Path:
         shutil.rmtree(path)
     path.mkdir(parents=True)
     return path
+

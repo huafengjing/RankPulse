@@ -24,8 +24,11 @@ class AppSettings:
     signal_test_interval_minutes: int = 5
     enable_12h_weak_exit: bool = True
     enable_4h_extreme_weak_exit: bool = True
+    enable_rank1_24h_weak_exit: bool = True
+    enable_mfe_aging_partial_tp: bool = True
     test_extreme_weak_exit_after_minutes: int = 5
     test_weak_exit_after_minutes: int = 15
+    test_rank1_24h_weak_exit_after_minutes: int = 30
     test_planned_exit_after_minutes: int = 60
     enforce_safety_lock: bool = True
     allow_live_trading: bool = False
@@ -58,8 +61,11 @@ class AppSettings:
             signal_test_interval_minutes=int(env.get("SIGNAL_TEST_INTERVAL_MINUTES", "5")),
             enable_12h_weak_exit=_bool(env.get("ENABLE_12H_WEAK_EXIT", "true")),
             enable_4h_extreme_weak_exit=_bool(env.get("ENABLE_4H_EXTREME_WEAK_EXIT", "true")),
+            enable_rank1_24h_weak_exit=_bool(env.get("ENABLE_RANK1_24H_WEAK_EXIT", "true")),
+            enable_mfe_aging_partial_tp=_bool(env.get("ENABLE_MFE_AGING_PARTIAL_TP", "true")),
             test_extreme_weak_exit_after_minutes=int(env.get("TEST_EXTREME_WEAK_EXIT_AFTER_MINUTES", "5")),
             test_weak_exit_after_minutes=int(env.get("TEST_WEAK_EXIT_AFTER_MINUTES", "15")),
+            test_rank1_24h_weak_exit_after_minutes=int(env.get("TEST_RANK1_24H_WEAK_EXIT_AFTER_MINUTES", "30")),
             test_planned_exit_after_minutes=int(env.get("TEST_PLANNED_EXIT_AFTER_MINUTES", "60")),
             enforce_safety_lock=_bool(env.get("ENFORCE_SAFETY_LOCK", "true")),
             allow_live_trading=_bool(env.get("ALLOW_LIVE_TRADING", "false")),

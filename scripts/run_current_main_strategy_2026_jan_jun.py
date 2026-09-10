@@ -31,6 +31,11 @@ from scripts.backfill_old_half_and_run_main_strategy import (
 )
 from scripts.backtest_futures_top2_fixed_time import BUY_NOTIONAL_U, CACHE_DIR, generate_signals
 from scripts.backtest_futures_top2_fixed_time import latest_signal_end_dt
+from src.research.rankpulse_strategy_rules import (
+    PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MAX_DAYS,
+    PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MIN_DAYS,
+    same_symbol_reentry_block_reason,
+)
 
 
 PREFIX = "current_main_strategy_2026_jan_jun_vol55"
@@ -230,6 +235,8 @@ def simulate_trade(signal: pd.Series, kline_map: dict[str, pd.DataFrame], curren
 def simulate_with_position_limit(signals: pd.DataFrame, kline_map: dict[str, pd.DataFrame], current_time: int) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     open_until_by_symbol: dict[str, int] = {}
+    last_entry_by_symbol: dict[str, int] = {}
+    last_pnl_by_symbol: dict[str, float] = {}
     for _, signal in signals.sort_values(["signal_time", "rank", "symbol"]).iterrows():
         symbol = str(signal["symbol"])
         signal_time = int(signal["signal_time"])
@@ -241,6 +248,31 @@ def simulate_with_position_limit(signals: pd.DataFrame, kline_map: dict[str, pd.
             row["target_hold_days"] = HOLD_DAYS
             rows.append(row)
             continue
+        reentry_reason = same_symbol_reentry_block_reason(
+            symbol,
+            signal_time,
+            last_entry_by_symbol,
+            last_pnl_by_symbol,
+        )
+        if reentry_reason is not None:
+            row = skipped_open_position_trade(signal, signal_time)
+            row["leverage"] = int(signal["leverage"])
+            row["gain_24h_bucket"] = signal.get("gain_24h_bucket", gain_bucket(float(signal["gain_24h"])))
+            row["target_hold_days"] = HOLD_DAYS
+            row["skip_reason"] = (
+                "prev_win_same_symbol_reentry_0_30d"
+                if "Previous winning" in reentry_reason
+                else (
+                    f"prev_loss_same_symbol_reentry_"
+                    f"{PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MIN_DAYS}_"
+                    f"{PREV_LOSS_SAME_SYMBOL_REENTRY_BLOCK_MAX_DAYS}d"
+                )
+            )
+            row["filter_reason"] = reentry_reason
+            row["days_since_prev_trade"] = (signal_time - last_entry_by_symbol[symbol]) / DAY_MS
+            row["prev_pnl_u"] = last_pnl_by_symbol.get(symbol, np.nan)
+            rows.append(row)
+            continue
         trade = simulate_trade(signal, kline_map, current_time)
         rows.append(trade)
         if trade.get("status") in {"completed", "open_mark_to_market"}:
@@ -248,6 +280,8 @@ def simulate_with_position_limit(signals: pd.DataFrame, kline_map: dict[str, pd.
             # also block another signal on the same cutoff timestamp.
             lock_extra_ms = 1 if trade.get("status") == "open_mark_to_market" else 0
             open_until_by_symbol[symbol] = int(float(trade["exit_time_ms"])) + lock_extra_ms
+            last_entry_by_symbol[symbol] = signal_time
+            last_pnl_by_symbol[symbol] = float(trade.get("pnl_u", np.nan))
     return pd.DataFrame(rows)
 
 
